@@ -1,7 +1,7 @@
 # Open Questions — Aeliuscase Global Search Chatbot Widget
 **Date Opened:** 2026-06-02
-**Last Updated:** 2026-06-02
-**Status:** Partially resolved — CaseController API.docx reviewed 2026-06-02
+**Last Updated:** 2026-06-05
+**Status:** Partially resolved — CaseController API.docx reviewed 2026-06-02; AI layer questions added 2026-06-05
 
 These questions must be resolved before the corresponding work item can move to development. Each question is tagged with the artefact it blocks.
 
@@ -124,11 +124,56 @@ The following values are confirmed from the CaseController API docx and the proj
 
 ---
 
+---
+
+## AI Layer Questions (added 2026-06-05 — post-implementation review)
+
+| # | Question | Blocks | Owner | Status |
+|---|---|---|---|---|
+| AI-13 | The `/api/chat/route.ts` AI layer uses OpenAI GPT-4o-mini. The project standard (CLAUDE.md) is Claude (claude-sonnet-4-6). Should the AI provider be switched to Claude/Anthropic? | app/api/chat/route.ts, OPENAI_API_KEY env var, billing | Product Owner / Dev Team | **Open — CRITICAL** |
+| AI-14 | Is the AI chat layer within the agreed MVP scope? MVP-scope.md v1.0 explicitly excludes "local NLP processing" and states "Query is forwarded as-is to the CaseController API". The current implementation routes every query through an LLM. Was this a deliberate scope expansion? | MVP-scope.md, billing, product sign-off | Product Owner | **Open** |
+| AI-15 | `src/types/chat.ts`, `src/hooks/useChatHistory.ts`, and `src/hooks/useCaseSearch.ts` were built to the original spec but are now unused (the AI SDK implementation bypasses them). Should they be deleted as dead code, or kept as a fallback if the AI layer is removed? | Code maintenance | Dev Team | **Open** |
+
+### AI Layer Question Notes
+
+**AI-13 — OpenAI vs Claude:**
+The current implementation requires `OPENAI_API_KEY` in `.env.local`. To switch to Claude, replace `@ai-sdk/openai` with `@ai-sdk/anthropic`, update the model call from `openai('gpt-4o-mini')` to `anthropic('claude-haiku-4-5-20251001')` (or `claude-sonnet-4-6` for higher quality), and add `ANTHROPIC_API_KEY` to `.env.local`. The AI SDK 6.x provider swap is minimal — same `streamText` API.
+
+**AI-14 — Scope:**
+The AI layer adds: (1) an LLM call on every user message — cost and latency; (2) a new external API dependency (OpenAI or Anthropic); (3) intelligent query understanding (the LLM decides when to call `searchCases` vs. respond conversationally). This is materially beyond MVP v1.0. A product sign-off and cost estimate is recommended before moving to production.
+
+---
+
+## Updated API Questions
+
+| # | Question | Blocks | Owner | Status |
+|---|---|---|---|---|
+| API-11 | Case detail URL path. `CaseCard.tsx` currently constructs URLs as `{NEXT_PUBLIC_APP_BASE_URL}/dashboard/case-overview/{id}`. Confirm this is the correct SPA route. | CaseCard.tsx, US-003 | Dev Team / Frontend Team | **Open — partially resolved** |
+| API-12 | Env variable naming: original spec used `VITE_JWT_TOKEN`; actual implementation uses `JWT_TOKEN` (server-side, no prefix). This is correct for Next.js. User stories US-002, US-003, US-006 still reference old `VITE_` names. | US-002, US-003, US-006 | Dev Team | **Resolved in code — docs need update** |
+
+### API-11 Update (2026-06-05)
+`CaseCard.tsx` was implemented with `/dashboard/case-overview/{id}` as the URL path. This is a developer assumption. If the actual Aeliuscase SPA uses a different route (e.g. `/cases/{id}`, `/kase/{id}`), the `CaseCard.tsx` line must be updated. Confirm with Aeliuscase frontend team.
+
+### API-12 Update (2026-06-05)
+The migration to Next.js 15 resolved the env variable naming problem: `JWT_TOKEN` and `API_BASE_URL` are server-side only (no `VITE_`/`NEXT_PUBLIC_` prefix needed); `NEXT_PUBLIC_APP_BASE_URL` is the only client-side variable. The old Vite-era `VITE_JWT_TOKEN` name referenced in US-002, US-003, US-006, and MVP-scope.md is stale and should be updated in those documents.
+
+---
+
+## DEV Questions (internal — implementation decisions)
+
+| # | Question | Blocks | Owner | Status |
+|---|---|---|---|---|
+| DEV-1 | Remove dead code? `src/types/chat.ts`, `src/hooks/useChatHistory.ts`, `src/hooks/useCaseSearch.ts` are unused by the current AI SDK architecture. | Code quality | Dev Team | **Open** |
+
+---
+
 ## How to Resolve Remaining Questions
 
-1. **API-6 / INF-4 (CORS):** Make a test `GET` request from a browser origin matching the Aeliuscase host to `https://uatapi.aeliuscase.com/api/Case/Search`. Check whether the response includes `Access-Control-Allow-Origin`. If CORS is blocked, configure a Vite dev proxy immediately (see implementation-checklist.md note #6).
-2. **API-8 (Sinhala Unicode):** Submit a test query with Sinhala characters to `GET /api/Case/Search` and verify the `searchText` param is correctly decoded on the server (check server logs or response).
-3. **API-11 (case detail URL path):** Ask the Aeliuscase frontend team for the SPA route that renders the case detail page, given a case `id`.
-4. **API-12 (env variable name):** Confirm with the Product Owner whether the canonical name is `VITE_JWT_TOKEN` (project brief) or `VITE_API_JWT_TOKEN` (MVP-scope.md v1.0). Update MVP-scope.md and all user stories to match once confirmed. Current working assumption is `VITE_JWT_TOKEN`.
-5. **PRD-1, PRD-2, PRD-3, PRD-4:** Schedule a short product alignment call with the Product Owner.
-6. **INF-1, INF-2:** Schedule a deployment alignment call with the Infra team.
+1. **AI-13 (OpenAI vs Claude):** Decision needed from Product Owner on AI provider and API key. If Claude: update `app/api/chat/route.ts` to use `@ai-sdk/anthropic` provider and `ANTHROPIC_API_KEY`. Remove `OPENAI_API_KEY` from `.env.example`.
+2. **AI-14 (AI scope sign-off):** Schedule a product alignment call to confirm the AI layer is in scope, agree on cost budget, and update MVP-scope.md accordingly.
+3. **AI-15 / DEV-1 (dead code):** If the AI layer is confirmed in scope, delete `src/types/chat.ts`, `src/hooks/useChatHistory.ts`, `src/hooks/useCaseSearch.ts`. If there's a plan to support a no-LLM fallback, keep them.
+4. **API-6 / INF-4 (CORS):** CORS is not relevant for the Next.js proxy architecture — the browser only calls `localhost` or the same origin. This question is resolved by the architecture.
+5. **API-8 (Sinhala Unicode):** Submit a test query with Sinhala characters and verify in Network tab that `searchText` is correctly encoded.
+6. **API-11 (case detail URL path):** Ask the Aeliuscase frontend team for the correct SPA route. Update `CaseCard.tsx` line: `const caseDetailUrl = \`${appBaseUrl}/dashboard/case-overview/${caseItem.id}\`;`
+7. **PRD-1, PRD-2, PRD-3, PRD-4:** Schedule a short product alignment call with the Product Owner.
+8. **INF-1, INF-2:** Schedule a deployment alignment call with the Infra team.

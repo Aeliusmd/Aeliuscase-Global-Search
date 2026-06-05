@@ -6,6 +6,7 @@ Format: each agent run gets one entry. `skill-advisor` writes a per-skill justif
 |-----------|-------|-------|---------------------------|---------------|-----------|--------------------|-------------|--------------|--------|
 | 2026-06-02 | architect | 1 | architecture, api-design-principles [AG] | skill-advisor | Plan | — | — | Read CaseController API.docx; updated C4-container.md, component-map.md; created build-sequence.md | Complete |
 | 2026-06-02 | analyst | 1 | product-manager, api-design-principles [AG] | skill-advisor | Plan | — | — | Confirmed API contract from docx; updated US-001; created US-002, US-003, implementation-checklist.md; resolved 13 QUESTIONS | Complete |
+| 2026-06-05 | analyst | 1 | product-manager [AG] | manual | Plan | — | — | Post-implementation code review: updated implementation-checklist.md v1.2 (marked completions, documented AI layer additions, flagged dead code); updated QUESTIONS.md (added AI-13, AI-14, AI-15, DEV-1, API-11/12 updates); updated MVP-scope.md v2.0 (Next.js + AI layer); created US-007-ai-chat-layer.md | Complete |
 
 ---
 
