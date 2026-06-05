@@ -45,7 +45,7 @@ function StatusBadge({ status }: { status: string }) {
 
 export default function CaseCard({ caseItem }: CaseCardProps) {
   const appBaseUrl = process.env.NEXT_PUBLIC_APP_BASE_URL ?? '';
-  const caseDetailUrl = `${appBaseUrl}/cases/${caseItem.id}`;
+  const caseDetailUrl = `${appBaseUrl}/dashboard/case-overview/${caseItem.id}`;
   const applicantName = formatApplicantName(caseItem);
 
   return (
@@ -72,7 +72,7 @@ export default function CaseCard({ caseItem }: CaseCardProps) {
         )}
       </div>
 
-      <div className="flex items-center justify-between pt-2 border-t border-gray-100">
+      <div className="flex items-center justify-between pt-2 border-t border-gray-100 min-h-[44px]">
         <span className="text-xs text-gray-400">{formatDate(caseItem.createdDateTime)}</span>
         <a
           href={caseDetailUrl}
