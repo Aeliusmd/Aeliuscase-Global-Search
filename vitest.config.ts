@@ -11,6 +11,10 @@ export default defineConfig({
   },
   resolve: {
     alias: {
+      // This shared server lib lives at the project root, not under src. Map the
+      // exact module so other '@/lib/*' imports still resolve via the '@'→src
+      // alias below.
+      '@/lib/caseSearch': path.resolve(__dirname, './lib/caseSearch.ts'),
       '@': path.resolve(__dirname, './src'),
     },
   },

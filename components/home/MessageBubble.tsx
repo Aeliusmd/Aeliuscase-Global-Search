@@ -274,6 +274,7 @@ export default function MessageBubble({ message, onLoadMore }: MessageBubbleProp
                   toolCallId={part.toolCallId}
                   cases={result.cases}
                   totalRecords={result.totalRecords}
+                  totalPages={result.totalPages ?? 1}
                   query={result.searchText}
                   searchType={result.searchType as MainSearchType}
                   page={result.page}
@@ -289,23 +290,26 @@ export default function MessageBubble({ message, onLoadMore }: MessageBubbleProp
 
         {/* Copy / feedback actions */}
         {allText.trim() && (
-          <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity duration-150 mt-1">
+          <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity duration-150 mt-1">
             <button
               onClick={() => handleCopy(allText)}
-              className="w-6 h-6 flex items-center justify-center rounded hover:bg-background-200 transition-colors cursor-pointer"
+              className="w-9 h-9 flex items-center justify-center rounded hover:bg-background-200 transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-400"
               title="Copy"
+              aria-label="Copy message"
             >
               <i className={`text-xs ${copied ? 'ri-check-line text-accent-500' : 'ri-file-copy-line text-secondary-400'}`} />
             </button>
             <button
-              className="w-6 h-6 flex items-center justify-center rounded hover:bg-background-200 transition-colors cursor-pointer"
+              className="w-9 h-9 flex items-center justify-center rounded hover:bg-background-200 transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-400"
               title="Thumbs up"
+              aria-label="Thumbs up"
             >
               <i className="ri-thumb-up-line text-xs text-secondary-400" />
             </button>
             <button
-              className="w-6 h-6 flex items-center justify-center rounded hover:bg-background-200 transition-colors cursor-pointer"
+              className="w-9 h-9 flex items-center justify-center rounded hover:bg-background-200 transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-400"
               title="Thumbs down"
+              aria-label="Thumbs down"
             >
               <i className="ri-thumb-down-line text-xs text-secondary-400" />
             </button>

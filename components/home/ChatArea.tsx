@@ -7,6 +7,7 @@ import type { UIMessage } from 'ai';
 import type { CaseSearchItem, MainSearchType, PagedApiResponse, SearchToolOutput } from '@/types/case';
 import MessageBubble, { type OnLoadMore } from './MessageBubble';
 import InputBar from './InputBar';
+import ThemeToggle from '@/components/ThemeToggle';
 
 const SUGGESTION_CHIPS = [
   { icon: 'ri-search-eye-line', text: 'Search all cases' },
@@ -127,7 +128,7 @@ export default function ChatArea({
       url.searchParams.set('searchText', searchText);
       url.searchParams.set('searchType', String(msgSearchType));
       url.searchParams.set('page', String(currentPage + 1));
-      url.searchParams.set('pageSize', '20');
+      url.searchParams.set('pageSize', '10');
 
       const response = await fetch(url.toString());
       const data = (await response.json()) as PagedApiResponse<CaseSearchItem>;
@@ -162,16 +163,16 @@ export default function ChatArea({
     [setMessages],
   );
 
-const showEmptyState = isNew && messages.length === 0;
+  const showEmptyState = isNew && messages.length === 0;
   const hasGradientTitle = !isNew && conversationTitle !== 'New Conversation';
 
   return (
     <div className="flex flex-col flex-1 min-w-0 h-full bg-background-50">
       {/* Header */}
-      <div className="flex items-center justify-between px-4 sm:px-6 py-3.5 border-b border-background-200 bg-background-50/90 backdrop-blur-sm sticky top-0 z-10">
+      <div className="flex items-center justify-between px-4 sm:px-6 py-3.5 border-b border-background-200 bg-background-50/90 backdrop-blur-sm relative md:sticky md:top-0 z-10">
         <div className="flex items-center gap-2 min-w-0">
           <button
-            className="flex md:hidden items-center justify-center w-11 h-11 -ml-1 rounded-lg hover:bg-background-100 transition-colors flex-shrink-0"
+            className="flex md:hidden items-center justify-center w-11 h-11 -ml-1 rounded-lg hover:bg-background-100 transition-colors flex-shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-400"
             onClick={onToggleSidebar}
             aria-label="Open navigation"
           >
@@ -206,6 +207,7 @@ const showEmptyState = isNew && messages.length === 0;
             </div>
           </div>
         </div>
+        <ThemeToggle />
       </div>
 
       {/* Body */}
@@ -244,7 +246,7 @@ const showEmptyState = isNew && messages.length === 0;
                 <button
                   key={chip.text}
                   onClick={() => handleSend(chip.text)}
-                  className="flex items-center gap-1.5 px-3.5 py-2 rounded-full border border-background-300 bg-background-50 hover:border-primary-300 hover:text-primary-700 hover:bg-primary-50 hover:shadow-sm transition-all duration-200 text-sm text-foreground-600 cursor-pointer whitespace-nowrap"
+                  className="flex items-center gap-1.5 px-3.5 py-2 min-h-[44px] rounded-full border border-background-300 bg-background-50 hover:border-primary-300 hover:text-primary-700 hover:bg-primary-50 hover:shadow-sm transition-all duration-200 text-sm text-foreground-600 cursor-pointer whitespace-nowrap focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-400"
                 >
                   <div className="w-4 h-4 flex items-center justify-center">
                     <i className={`${chip.icon} text-xs`} />
@@ -298,7 +300,7 @@ const showEmptyState = isNew && messages.length === 0;
       )}
 
       {/* Input */}
-      <div className="border-t border-background-200 bg-background-50">
+      <div className="border-t border-background-200 bg-background-50 safe-bottom">
         <InputBar onSend={handleSend} disabled={isLoading} />
       </div>
     </div>

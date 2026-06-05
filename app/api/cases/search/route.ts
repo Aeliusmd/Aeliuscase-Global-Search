@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { PAGE_SIZE, searchCasesPaginated } from '@/lib/caseSearch';
 
 export async function GET(request: NextRequest) {
   const jwtToken = process.env.JWT_TOKEN;
@@ -17,24 +18,47 @@ export async function GET(request: NextRequest) {
   }
 
   const { searchParams } = new URL(request.url);
-
-  const upstream = new URL(`${apiBaseUrl}/api/Case/Search`);
-  upstream.searchParams.set('searchText', searchParams.get('searchText') ?? '');
-  upstream.searchParams.set('searchType', searchParams.get('searchType') ?? '1');
-  upstream.searchParams.set('page', searchParams.get('page') ?? '1');
-  upstream.searchParams.set('pageSize', searchParams.get('pageSize') ?? '20');
+  const searchText = searchParams.get('searchText') ?? '';
+  const searchType = Number(searchParams.get('searchType') ?? '1') || 1;
+  const page = Number(searchParams.get('page') ?? '1') || 1;
+  const pageSize = Number(searchParams.get('pageSize') ?? String(PAGE_SIZE)) || PAGE_SIZE;
 
   try {
-    const response = await fetch(upstream.toString(), {
-      headers: {
-        Authorization: `Bearer ${jwtToken}`,
-        Accept: 'application/json',
-      },
-      cache: 'no-store',
+    // Fetch the full matching set, filter by status, and slice the requested
+    // page with exact totals (the upstream's own paging metadata is unreliable).
+    const result = await searchCasesPaginated({
+      apiBaseUrl,
+      jwtToken,
+      searchText,
+      searchType,
+      page,
+      pageSize,
     });
 
-    const data: unknown = await response.json();
-    return NextResponse.json(data, { status: response.status });
+    if (!result.success) {
+      return NextResponse.json(
+        { succeeded: false, message: result.error ?? 'Search failed', data: [] },
+        { status: result.status }
+      );
+    }
+
+    return NextResponse.json(
+      {
+        page: result.page,
+        pageSize: result.pageSize,
+        totalPages: result.totalPages,
+        totalRecords: result.totalRecords,
+        isFirstPage: result.page <= 1,
+        isLastPage: result.page >= result.totalPages,
+        hasMorePages: result.hasMorePages,
+        status: 200,
+        succeeded: true,
+        message: null,
+        errors: null,
+        data: result.cases,
+      },
+      { status: 200 }
+    );
   } catch {
     return NextResponse.json(
       {

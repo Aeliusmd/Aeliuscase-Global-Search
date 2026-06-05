@@ -12,8 +12,9 @@ export default function FloatingButton({ isOpen, onClick }: FloatingButtonProps)
     <button
       onClick={onClick}
       aria-label={isOpen ? 'Close case search' : 'Open case search'}
+      style={{ bottom: 'calc(1.5rem + env(safe-area-inset-bottom, 0px))' }}
       className={cn(
-        'fixed bottom-6 right-6 z-50',
+        'fixed right-6 z-50',
         'w-14 h-14 rounded-full shadow-lg',
         'bg-blue-600 hover:bg-blue-700 active:bg-blue-800',
         'text-white',

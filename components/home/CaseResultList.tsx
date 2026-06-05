@@ -53,21 +53,6 @@ function formatApplicantName(caseItem: CaseSearchItem): string {
   return '—';
 }
 
-/** Client-side safety filter — the upstream API sometimes leaks wrong statuses. */
-function filterByType(cases: CaseSearchItem[], searchType: MainSearchType): CaseSearchItem[] {
-  if (searchType === MainSearchType.AllCases) return cases;
-  return cases.filter((c) => {
-    const s = c.caseStatusDescription.toLowerCase();
-    if (searchType === MainSearchType.OpenCases)
-      return s.includes('open') && !s.includes('sub');
-    if (searchType === MainSearchType.ClosedCases)
-      return s.includes('clos') || s.includes('resolv') || s.includes('settl');
-    if (searchType === MainSearchType.SubOutCases)
-      return s.includes('sub');
-    return true;
-  });
-}
-
 function StatusBadge({ status }: { status: string }) {
   const lower = status.toLowerCase();
   const base = 'inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-semibold whitespace-nowrap border ';
@@ -135,11 +120,11 @@ export default function CaseResultList({
       const data = (await res.json()) as PagedApiResponse<CaseSearchItem>;
       if (!res.ok || !data.succeeded) return;
 
-      // Apply the same client-side filter used on the initial page
-      const filtered = filterByType(data.data ?? [], searchType);
-
+      // The proxy already filters by status and slices the page, so render the
+      // returned rows as-is — re-filtering here would shrink the page below 10
+      // and desync it from the totals.
       setCurrentPage(data.page);
-      setDisplayedCases(filtered);
+      setDisplayedCases(data.data ?? []);
       setApiTotalPages(data.totalPages);
       setApiTotalRecords(data.totalRecords);
     } catch {

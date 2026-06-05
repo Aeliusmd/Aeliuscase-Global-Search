@@ -41,9 +41,10 @@ export default function ChatInput({ onSubmit, disabled }: ChatInputProps) {
           placeholder="Search for cases..."
           aria-label="Search cases"
           className={cn(
-            'flex-1 text-sm border border-gray-300 rounded-lg px-3 py-2',
+            'flex-1 text-sm border border-gray-300 rounded-lg px-3 py-2 min-h-[44px]',
             'placeholder-gray-400 text-gray-900',
             'focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent',
+            'focus-visible:ring-2 focus-visible:ring-blue-500',
             'transition-colors duration-150',
             disabled && 'bg-gray-50 text-gray-400 cursor-not-allowed'
           )}
@@ -53,7 +54,7 @@ export default function ChatInput({ onSubmit, disabled }: ChatInputProps) {
           disabled={disabled || !value.trim()}
           aria-label="Send message"
           className={cn(
-            'flex-shrink-0 w-9 h-9 rounded-lg flex items-center justify-center',
+            'flex-shrink-0 w-11 h-11 rounded-lg flex items-center justify-center',
             'bg-blue-600 text-white transition-colors duration-150',
             'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-1',
             'hover:bg-blue-700 active:bg-blue-800',

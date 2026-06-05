@@ -114,7 +114,7 @@ export default function ChatPanel({ onClose }: ChatPanelProps) {
   );
 
   return (
-    <div className="fixed bottom-20 left-2 right-2 xs:left-auto xs:right-6 z-40 w-auto xs:w-96 max-w-[calc(100vw-1rem)] max-h-[calc(100dvh-6rem)] flex flex-col bg-white rounded-2xl shadow-2xl border border-gray-200 overflow-hidden">
+    <div className="fixed bottom-20 left-2 right-2 xs:left-auto xs:right-6 z-40 w-auto xs:w-96 max-w-[calc(100vw-1rem)] max-h-[calc(100dvh-6rem)] flex flex-col bg-white rounded-2xl shadow-2xl border border-gray-200 overflow-hidden" style={{ bottom: 'calc(5rem + env(safe-area-inset-bottom, 0px))' }}>
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-3 bg-blue-600 text-white rounded-t-2xl flex-shrink-0">
         <div>

@@ -31,21 +31,27 @@ function formatApplicantName(caseItem: CaseSearchItem): string | null {
 
 function StatusBadge({ status }: { status: string }) {
   const lower = status.toLowerCase();
-  let style: React.CSSProperties = {};
-  let className = 'inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ';
+  const base = 'inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium border ';
 
   if (lower.includes('open')) {
-    className += 'text-emerald-700';
-    style = { background: 'rgba(52, 211, 153, 0.15)', border: '1px solid rgba(52, 211, 153, 0.3)' };
-  } else if (lower.includes('close')) {
-    className += 'text-secondary-600';
-    style = { background: 'oklch(var(--background-100))', border: '1px solid oklch(var(--background-300))' };
-  } else {
-    className += 'text-amber-700';
-    style = { background: 'rgba(251, 191, 36, 0.15)', border: '1px solid rgba(251, 191, 36, 0.3)' };
+    return (
+      <span className={base + 'bg-emerald-100 text-emerald-800 border-emerald-200 dark:bg-emerald-900/25 dark:text-emerald-300 dark:border-emerald-700/40'}>
+        {status}
+      </span>
+    );
   }
-
-  return <span className={className} style={style}>{status}</span>;
+  if (lower.includes('close')) {
+    return (
+      <span className={base + 'bg-background-100 text-secondary-600 border-background-300'}>
+        {status}
+      </span>
+    );
+  }
+  return (
+    <span className={base + 'bg-amber-100 text-amber-800 border-amber-200 dark:bg-amber-900/25 dark:text-amber-300 dark:border-amber-700/40'}>
+      {status}
+    </span>
+  );
 }
 
 export default function CaseCard({ caseItem }: CaseCardProps) {
@@ -77,14 +83,14 @@ export default function CaseCard({ caseItem }: CaseCardProps) {
         )}
       </div>
 
-      <div className="flex items-center justify-between pt-2 border-t border-background-200 min-h-[44px]">
+      <div className="flex items-center justify-between pt-2 border-t border-background-200">
         <span className="text-xs text-secondary-400">{formatDate(caseItem.createdDateTime)}</span>
         <a
           href={caseDetailUrl}
           target="_blank"
           rel="noopener noreferrer"
           aria-label={`View case ${caseItem.caseNumber}`}
-          className="inline-flex items-center gap-1 text-xs font-medium transition-colors"
+          className="inline-flex items-center gap-1 text-xs font-medium transition-colors min-h-[44px] px-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-400 rounded"
           style={{ color: '#6763AC' }}
         >
           View Case

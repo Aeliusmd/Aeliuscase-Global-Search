@@ -22,7 +22,7 @@ export default function SearchTypeFilter({ value, onChange, disabled }: SearchTy
           type="button"
           onClick={() => onChange(opt.value)}
           disabled={disabled}
-          className={`px-3 py-2 text-xs rounded-full whitespace-nowrap font-medium transition-all duration-150 focus-visible:outline-none min-h-[44px] flex items-center ${
+          className={`px-3 py-2 text-xs rounded-full whitespace-nowrap font-medium transition-all duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-400 min-h-[44px] flex items-center ${
             value === opt.value
               ? 'text-white shadow-sm'
               : 'bg-background-100 text-foreground-600 border border-background-200 hover:border-primary-300 hover:text-primary-700'

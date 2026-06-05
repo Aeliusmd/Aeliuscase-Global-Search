@@ -1,4 +1,4 @@
-import type { CaseSearchItem } from './case';
+import type { CaseSearchItem, MainSearchType } from './case';
 
 export enum MessageType {
   USER = 'USER',
@@ -35,6 +35,9 @@ export interface BotCasesMessage extends BaseMessage {
   cases: CaseSearchItem[];
   totalRecords: number;
   query: string;
+  searchType: MainSearchType;
+  page: number;
+  hasMorePages: boolean;
 }
 
 export type Message = UserMessage | BotTextMessage | BotErrorMessage | BotCasesMessage;

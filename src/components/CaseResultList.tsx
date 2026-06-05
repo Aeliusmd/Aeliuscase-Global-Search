@@ -77,7 +77,7 @@ export default function CaseResultList({
           <button
             onClick={handleLoadMore}
             disabled={loadingMore}
-            className="mt-2 w-full text-xs text-blue-600 hover:text-blue-800 font-medium py-1.5 border border-blue-200 rounded-lg hover:bg-blue-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            className="mt-2 w-full text-xs text-blue-600 hover:text-blue-800 font-medium py-1.5 min-h-[44px] border border-blue-200 rounded-lg hover:bg-blue-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
           >
             {loadingMore
               ? 'Loading...'

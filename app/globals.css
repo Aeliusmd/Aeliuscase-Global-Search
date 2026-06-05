@@ -1,8 +1,8 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Sora:wght@300;400;500;600;700&display=swap');
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
-
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Sora:wght@300;400;500;600;700&display=swap');
 
 :root {
   --primary-50:  0.97 0.02 280;
@@ -70,9 +70,41 @@
   --font-label: 'Inter', sans-serif;
 }
 
+/* ─── Dark mode: invert background + foreground scale ──────────────────────── */
+.dark {
+  --background-50:  0.130 0.012 280;
+  --background-100: 0.165 0.013 280;
+  --background-200: 0.210 0.014 280;
+  --background-300: 0.270 0.015 280;
+  --background-400: 0.340 0.015 280;
+  --background-500: 0.420 0.013 280;
+  --background-600: 0.520 0.012 280;
+  --background-700: 0.640 0.011 280;
+  --background-800: 0.760 0.009 280;
+  --background-900: 0.880 0.006 280;
+  --background-950: 0.960 0.003 280;
+
+  --foreground-50:  0.120 0.095 291;
+  --foreground-100: 0.200 0.080 289;
+  --foreground-200: 0.300 0.070 287;
+  --foreground-300: 0.400 0.060 285;
+  --foreground-400: 0.510 0.050 284;
+  --foreground-500: 0.620 0.038 282;
+  --foreground-600: 0.730 0.028 281;
+  --foreground-700: 0.820 0.016 280;
+  --foreground-800: 0.900 0.008 280;
+  --foreground-900: 0.950 0.004 280;
+  --foreground-950: 0.980 0.002 280;
+}
+
 * { box-sizing: border-box; }
 
 html, body { overflow-x: hidden; }
+
+/* Safe-area insets for notched / Dynamic Island phones */
+.safe-bottom {
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
 
 button, a, input, select, textarea, [role="button"] {
   touch-action: manipulation;
@@ -95,6 +127,20 @@ body {
 .chat-table tr:last-child td { border-bottom: none; }
 .chat-table tr:nth-child(even) td { background: oklch(var(--background-100)); }
 .chat-table tr:hover td { background: oklch(var(--primary-50)); }
+
+/* Case result list header — light purple gradient in light mode, dark surface in dark mode */
+.case-result-header {
+  background: linear-gradient(135deg, oklch(var(--primary-50)) 0%, oklch(var(--accent-50)) 100%);
+}
+.dark .case-result-header {
+  background: oklch(var(--background-200));
+}
+
+.dark .chat-table th { background: oklch(var(--background-200)); color: oklch(var(--foreground-900)); border-bottom-color: oklch(var(--background-300)); }
+.dark .chat-table td { border-bottom-color: oklch(var(--background-200)); color: oklch(var(--foreground-700)); }
+.dark .chat-table tr:nth-child(even) td { background: oklch(var(--background-100)); }
+.dark .chat-table tr:hover td { background: oklch(var(--background-300)); }
+.dark ::-webkit-scrollbar-thumb { background: oklch(var(--primary-700)); }
 
 /* Message entrance animation */
 @keyframes fadeSlideIn {
