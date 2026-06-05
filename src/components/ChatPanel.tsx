@@ -137,7 +137,7 @@ export default function ChatPanel({ onClose }: ChatPanelProps) {
           <button
             onClick={onClose}
             aria-label="Close chat panel"
-            className="w-7 h-7 flex items-center justify-center rounded-full hover:bg-blue-700 active:bg-blue-800 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white"
+            className="w-11 h-11 flex items-center justify-center rounded-full hover:bg-blue-700 active:bg-blue-800 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white"
           >
             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
