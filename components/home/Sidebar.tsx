@@ -8,6 +8,7 @@ interface SidebarProps {
   conversations: Conversation[];
   onSelect: (id: string) => void;
   onNewChat: () => void;
+  onDelete: (id: string) => void;
   isOpen: boolean;
   onClose: () => void;
 }
@@ -16,64 +17,139 @@ interface ConvItemProps {
   conv: Conversation;
   active: boolean;
   onClick: () => void;
+  onDelete: (id: string) => void;
 }
 
-function ConvItem({ conv, active, onClick }: ConvItemProps) {
+function ConvItem({ conv, active, onClick, onDelete }: ConvItemProps) {
   const [hovered, setHovered] = useState(false);
+  const [confirmPending, setConfirmPending] = useState(false);
 
+  const handleDeleteClick = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setConfirmPending(true);
+  };
+
+  const handleConfirmYes = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    onDelete(conv.id);
+  };
+
+  const handleConfirmNo = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setConfirmPending(false);
+  };
+
+  // --- Inline confirmation state ---
+  if (confirmPending) {
+    return (
+      <div
+        className="w-full px-3 py-2.5 rounded-lg relative"
+        style={{ background: 'rgba(220,38,38,0.12)', boxShadow: '0 0 0 1px rgba(220,38,38,0.25)' }}
+      >
+        <p className="text-xs text-white/80 mb-2 truncate leading-snug">
+          Remove &ldquo;{conv.title}&rdquo;?
+        </p>
+        <div className="flex items-center gap-1.5">
+          <button
+            onClick={handleConfirmYes}
+            className="flex-1 py-1 rounded-md text-xs font-semibold text-white transition-all duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-400"
+            style={{ background: 'rgba(220,38,38,0.65)' }}
+            onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(220,38,38,0.85)')}
+            onMouseLeave={(e) => (e.currentTarget.style.background = 'rgba(220,38,38,0.65)')}
+          >
+            Yes, remove
+          </button>
+          <button
+            onClick={handleConfirmNo}
+            className="flex-1 py-1 rounded-md text-xs font-semibold text-white/70 hover:text-white transition-all duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-400"
+            style={{ background: 'rgba(255,255,255,0.08)' }}
+            onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(255,255,255,0.15)')}
+            onMouseLeave={(e) => (e.currentTarget.style.background = 'rgba(255,255,255,0.08)')}
+          >
+            No, keep
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // --- Normal session row ---
   return (
-    <button
-      onClick={onClick}
+    <div
+      className="relative group"
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
-      className={`w-full text-left px-3 py-2.5 min-h-[44px] rounded-lg transition-all duration-200 group cursor-pointer whitespace-nowrap relative focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-400 ${
-        active
-          ? 'text-white'
-          : 'text-white/70 hover:text-white'
-      }`}
-      style={
-        active
-          ? {
-              background: 'linear-gradient(135deg, rgba(103,99,172,0.35) 0%, rgba(61,192,236,0.20) 100%)',
-              boxShadow: '0 0 0 1px rgba(61,192,236,0.25), 0 2px 12px rgba(61,192,236,0.10)',
-            }
-          : hovered
-          ? { background: 'rgba(255,255,255,0.08)' }
-          : {}
-      }
     >
-      {/* Active left-accent bar */}
-      {active && (
-        <span
-          className="absolute left-0 top-1/2 -translate-y-1/2 w-0.5 h-4 rounded-full"
-          style={{ background: 'linear-gradient(to bottom, #3DC0EC, #6763AC)' }}
-        />
-      )}
-
-      <div className="flex items-center gap-2.5 min-w-0 pl-1">
-        <div className="w-5 h-5 flex items-center justify-center flex-shrink-0">
-          <i
-            className={`ri-chat-3-line text-sm transition-colors ${
-              active ? 'text-accent-300' : 'text-white/40 group-hover:text-white/70'
-            }`}
-          />
-        </div>
-        <div className="min-w-0 flex-1">
-          <p className={`text-sm font-medium truncate leading-tight ${active ? 'text-white' : ''}`}>
-            {conv.title}
-          </p>
-          {(active || hovered) && (
-            <p className="text-xs text-white/40 truncate mt-0.5">{conv.timestamp}</p>
-          )}
-        </div>
+      <button
+        onClick={onClick}
+        className={`w-full text-left px-3 py-2.5 min-h-[44px] rounded-lg transition-all duration-200 cursor-pointer whitespace-nowrap relative focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-400 ${
+          active ? 'text-white' : 'text-white/70 hover:text-white'
+        }`}
+        style={
+          active
+            ? {
+                background: 'linear-gradient(135deg, rgba(103,99,172,0.35) 0%, rgba(61,192,236,0.20) 100%)',
+                boxShadow: '0 0 0 1px rgba(61,192,236,0.25), 0 2px 12px rgba(61,192,236,0.10)',
+              }
+            : hovered
+            ? { background: 'rgba(255,255,255,0.08)' }
+            : {}
+        }
+      >
+        {/* Active left-accent bar */}
         {active && (
-          <div
-            className="w-1.5 h-1.5 rounded-full flex-shrink-0"
-            style={{ background: '#3DC0EC', boxShadow: '0 0 6px rgba(61,192,236,0.7)' }}
+          <span
+            className="absolute left-0 top-1/2 -translate-y-1/2 w-0.5 h-4 rounded-full"
+            style={{ background: 'linear-gradient(to bottom, #3DC0EC, #6763AC)' }}
           />
         )}
-      </div>
-    </button>
+
+        <div className="flex items-center gap-2.5 min-w-0 pl-1 pr-5">
+          <div className="w-5 h-5 flex items-center justify-center flex-shrink-0">
+            <i
+              className={`ri-chat-3-line text-sm transition-colors ${
+                active ? 'text-accent-300' : 'text-white/40 group-hover:text-white/70'
+              }`}
+            />
+          </div>
+          <div className="min-w-0 flex-1">
+            <p className={`text-sm font-medium truncate leading-tight ${active ? 'text-white' : ''}`}>
+              {conv.title}
+            </p>
+            {(active || hovered) && (
+              <p className="text-xs text-white/40 truncate mt-0.5">{conv.timestamp}</p>
+            )}
+          </div>
+          {active && !hovered && (
+            <div
+              className="w-1.5 h-1.5 rounded-full flex-shrink-0"
+              style={{ background: '#3DC0EC', boxShadow: '0 0 6px rgba(61,192,236,0.7)' }}
+            />
+          )}
+        </div>
+      </button>
+
+      {/* Delete icon — appears on hover, floats over the right edge */}
+      {hovered && (
+        <button
+          onClick={handleDeleteClick}
+          title="Remove this search"
+          aria-label={`Remove "${conv.title}"`}
+          className="absolute right-2 top-1/2 -translate-y-1/2 w-6 h-6 flex items-center justify-center rounded-md transition-all duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-400"
+          style={{ background: 'rgba(220,38,38,0.18)', color: 'rgba(255,120,120,0.85)' }}
+          onMouseEnter={(e) => {
+            e.currentTarget.style.background = 'rgba(220,38,38,0.40)';
+            e.currentTarget.style.color = '#fff';
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.background = 'rgba(220,38,38,0.18)';
+            e.currentTarget.style.color = 'rgba(255,120,120,0.85)';
+          }}
+        >
+          <i className="ri-delete-bin-6-line text-xs" />
+        </button>
+      )}
+    </div>
   );
 }
 
@@ -82,6 +158,7 @@ export default function Sidebar({
   conversations,
   onSelect,
   onNewChat,
+  onDelete,
   isOpen,
   onClose,
 }: SidebarProps) {
@@ -174,6 +251,7 @@ export default function Sidebar({
                   conv={conv}
                   active={activeId === conv.id}
                   onClick={() => onSelect(conv.id)}
+                  onDelete={onDelete}
                 />
               ))}
             </div>
@@ -197,6 +275,7 @@ export default function Sidebar({
                   conv={conv}
                   active={activeId === conv.id}
                   onClick={() => onSelect(conv.id)}
+                  onDelete={onDelete}
                 />
               ))}
             </div>

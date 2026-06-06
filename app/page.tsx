@@ -69,6 +69,15 @@ export default function Home() {
     );
   }, []);
 
+  const handleDeleteConversation = useCallback((id: string) => {
+    // Remove the session's messages from localStorage
+    try { localStorage.removeItem(`aelius_chat_${id}`); } catch {}
+    setConversations((prev) => prev.filter((c) => c.id !== id));
+    // If the deleted session was open, go back to a fresh new chat
+    setActiveId((prev) => (prev === id ? '' : prev));
+    setPendingNewId((prev) => (prev === id ? generateId() : prev));
+  }, []);
+
   const handleToggleSidebar = useCallback(() => {
     setSidebarOpen((v) => !v);
   }, []);
@@ -90,6 +99,7 @@ export default function Home() {
         conversations={conversations}
         onSelect={handleSelect}
         onNewChat={handleNewChat}
+        onDelete={handleDeleteConversation}
         isOpen={sidebarOpen}
         onClose={() => setSidebarOpen(false)}
       />
