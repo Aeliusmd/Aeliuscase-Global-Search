@@ -7,6 +7,11 @@ import { searchCasesPaginated } from '@/lib/caseSearch';
 
 export const maxDuration = 30;
 
+// How many recent turns the AI sees. Each "turn" = one UIMessage (user or assistant).
+// Keeping this small reduces token cost while still giving the model enough context
+// to stack filters (e.g. open → open+Maria → open+Maria+2024).
+const CONTEXT_WINDOW = 4;
+
 const SEARCH_TYPE_LABELS: Record<number, string> = {
   1: 'All Cases',
   2: 'Open Cases',
@@ -14,9 +19,19 @@ const SEARCH_TYPE_LABELS: Record<number, string> = {
   4: 'Sub-Out Cases',
 };
 
+type ToolPart = {
+  type: string;
+  output?: { searchType?: number; searchText?: string; totalRecords?: number };
+};
+
 /**
- * Detect the intended searchType from the latest user message text.
- * Runs server-side and overrides whatever the AI chooses in the tool call.
+ * Detect the intended searchType.
+ *
+ * Priority:
+ * 1. Explicit status keyword in the CURRENT user message (always wins).
+ * 2. searchType carried forward from the most recent tool result in history
+ *    — so "Maria ge cases ewanna" after "open cases" stays as Open.
+ * 3. Default: 1 (All Cases).
  */
 function detectSearchType(messages: UIMessage[]): number {
   const lastUser = [...messages].reverse().find((m) => m.role === 'user');
@@ -27,10 +42,44 @@ function detectSearchType(messages: UIMessage[]): number {
       ?.text ?? ''
   ).toLowerCase();
 
+  // 1 — explicit override in the current message
   if (/\b(open|active|current|pending|not closed)\b/.test(text)) return 2;
   if (/\b(clos(e|ed|es|ing)?|resolv(e|ed)?|settl(e|ed)?|complet(e|ed)?|done|finish(ed)?)\b/.test(text)) return 3;
   if (/\bsub[\s-]?out\b/.test(text)) return 4;
+
+  // 2 — carry forward the most recent tool result's searchType
+  for (const msg of [...messages].reverse()) {
+    if (msg.role !== 'assistant') continue;
+    for (const part of (msg.parts ?? []) as ToolPart[]) {
+      if (part.type === 'tool-searchCases' && part.output?.searchType) {
+        const t = part.output.searchType;
+        if (t >= 1 && t <= 4) return t;
+      }
+    }
+  }
+
   return 1;
+}
+
+/**
+ * Extract the most recent successful search context from message history so we
+ * can inject it into the system prompt. Gives the AI explicit knowledge of what
+ * was last searched even when history is trimmed to CONTEXT_WINDOW messages.
+ */
+function getLastSearchContext(messages: UIMessage[]): string {
+  for (const msg of [...messages].reverse()) {
+    if (msg.role !== 'assistant') continue;
+    for (const part of (msg.parts ?? []) as ToolPart[]) {
+      if (part.type === 'tool-searchCases' && part.output?.searchType) {
+        const { searchType, searchText, totalRecords } = part.output;
+        const label = SEARCH_TYPE_LABELS[searchType ?? 1] ?? 'All Cases';
+        const term = searchText ? ` | keyword: "${searchText}"` : ' | keyword: (none — all)';
+        const count = totalRecords !== undefined ? ` | found: ${totalRecords}` : '';
+        return `${label}${term}${count}`;
+      }
+    }
+  }
+  return 'none';
 }
 
 export async function POST(req: Request) {
@@ -53,50 +102,80 @@ export async function POST(req: Request) {
 
   const { messages } = (await req.json()) as { messages: UIMessage[] };
 
-  // Detect the correct searchType from the user's latest message
+  // Detect searchType scanning the FULL history (so carry-forward works even
+  // when older messages are outside the context window).
   const enforcedSearchType = detectSearchType(messages);
   const enforcedLabel = SEARCH_TYPE_LABELS[enforcedSearchType];
+
+  // Last search context injected into the system prompt so the AI knows the
+  // active filter even if that tool result is outside the trimmed window.
+  const lastSearchContext = getLastSearchContext(messages);
+
+  // Only send the last CONTEXT_WINDOW messages to the model — trims token cost
+  // while preserving enough turns for multi-step filter refinement.
+  const contextMessages = messages.slice(-CONTEXT_WINDOW);
 
   const result = streamText({
     model: openai('gpt-4o-mini'),
     system: `You are a smart legal case search assistant for Aeliuscase, a law firm case management platform.
 
-You help legal staff find cases quickly and accurately.
+LAST SEARCH IN THIS SESSION: ${lastSearchContext}
+CURRENT ENFORCED FILTER (server-side): ${enforcedLabel} (searchType=${enforcedSearchType})
 
-CURRENT REQUEST FILTER (enforced server-side): ${enforcedLabel} (searchType=${enforcedSearchType})
-The system has already detected the user wants ${enforcedLabel}. When calling searchCases, use searchType=${enforcedSearchType}.
+━━━ HOW TO BUILD SEARCH QUERIES ━━━
+Always look at the conversation history AND the LAST SEARCH context above to build
+the most specific searchText possible. Stack filters progressively:
 
-searchType values for reference:
-- 1 = All Cases
-- 2 = Open Cases only
-- 3 = Closed Cases only
-- 4 = Sub-Out Cases only
+  Step 1 — User asks for open cases
+           → searchType=2, searchText="" (all open)
 
-RULES:
-1. Greetings, thanks, or general questions → respond warmly in 1-2 sentences. Do NOT call any tool.
-2. Any request to find, search, show, or look up a case → ALWAYS call searchCases immediately.
-3. Use a short, relevant searchText (name, case number, or keyword). Do NOT put status words like "open" or "closed" in searchText.
-4. After a tool result: give a brief 1-line summary (e.g. "Found 42 open cases.").
-5. Zero results: suggest alternative search terms.
-6. Keep all responses short and professional.`,
-    messages: await convertToModelMessages(messages),
+  Step 2 — User says "show Maria's cases"
+           → searchType=2 (still open, carried forward), searchText="Maria"
+
+  Step 3 — User says "cases in 2024"
+           → searchType=2 (still open), searchText="Maria 2024"
+
+  Step 4 — User changes filter "now show closed"
+           → searchType=3, searchText="Maria 2024" (keyword carries forward)
+
+Rules for searchText:
+- COMBINE the keyword from the last search with any NEW name/number/keyword the user adds.
+- If the user explicitly replaces the topic (different person, different case), start fresh.
+- For date hints: append the year or month as a keyword (e.g. "Maria 2024", "RP2292 Jan").
+- NEVER include status words ("open", "closed") in searchText — status is in searchType.
+- Keep searchText SHORT — name, case number, or keyword only.
+
+searchType values:
+- 1 = All Cases  2 = Open only  3 = Closed only  4 = Sub-Out only
+
+━━━ GENERAL RULES ━━━
+1. Greetings or general questions → reply warmly in 1-2 sentences. Do NOT call any tool.
+2. Any request to find/show/look up a case → ALWAYS call searchCases immediately.
+3. After a tool result → one brief summary line (e.g. "Found 12 open cases for Maria.").
+4. Zero results → suggest a broader or alternative search term.
+5. Keep all responses short and professional.`,
+    messages: await convertToModelMessages(contextMessages),
     stopWhen: stepCountIs(5),
     tools: {
       searchCases: tool({
         description:
-          'Search for legal cases in the Aeliuscase system. Use for any request to find, show, or look up cases.',
+          'Search for legal cases in the Aeliuscase system. Always call this for any find/show/lookup request.',
         inputSchema: zodSchema(
           z.object({
             searchText: z
               .string()
-              .describe('Search term: case number (e.g. RP003782), applicant name, company, or keyword. Do NOT include status words here.'),
+              .describe(
+                'Accumulated search term combining prior keyword + new refinement. E.g. if last search was "Maria" and user now says "2024", use "Maria 2024". No status words.',
+              ),
             searchType: z
               .number()
               .int()
               .min(1)
               .max(4)
               .default(enforcedSearchType)
-              .describe(`Filter: 1=All, 2=Open, 3=Closed, 4=Sub-Out. Current request requires searchType=${enforcedSearchType} (${enforcedLabel}).`),
+              .describe(
+                `Status filter — server enforces ${enforcedSearchType} (${enforcedLabel}). Only change if the user explicitly switches status.`,
+              ),
             page: z.number().int().min(1).default(1).describe('Page number (starts at 1)'),
           }),
         ),
@@ -107,13 +186,10 @@ RULES:
             page: number;
           };
 
-          // Always use the server-detected type — never trust the AI's choice alone
+          // Server always enforces the detected type — model cannot override it.
           const searchType = enforcedSearchType;
 
           try {
-            // Fetch the full matching set, filter by status, and return the first
-            // page with exact totals so the UI shows the real count and can
-            // paginate cleanly (the upstream's own paging metadata is unreliable).
             const result = await searchCasesPaginated({
               apiBaseUrl,
               jwtToken,

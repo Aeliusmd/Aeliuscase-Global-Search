@@ -3,9 +3,7 @@
 import { useState, useCallback, useEffect } from 'react';
 import Sidebar from '@/components/home/Sidebar';
 import ChatArea from '@/components/home/ChatArea';
-import { type Conversation } from '@/mocks/chatData';
-
-const CONV_STORAGE_KEY = 'aelius_conversations';
+import type { ConversationMeta } from '@/types/conversation';
 
 function generateId() {
   return `chat-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`;
@@ -13,32 +11,34 @@ function generateId() {
 
 export default function Home() {
   const [activeId, setActiveId] = useState('');
-  const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [conversations, setConversations] = useState<ConversationMeta[]>([]);
   const [pendingNewId, setPendingNewId] = useState(generateId);
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
+  // Load conversation list from DB on mount
   useEffect(() => {
-    try {
-      const raw = localStorage.getItem(CONV_STORAGE_KEY);
-      if (raw) {
-        const stored = JSON.parse(raw) as Conversation[];
-        if (stored.length > 0) setConversations(stored);
-      }
-    } catch {}
+    fetch('/api/conversations')
+      .then((r) => r.json())
+      .then(({ data }: { data: Array<{ _id: string; title: string; preview: string; timestamp: string; pinned?: boolean }> }) => {
+        if (Array.isArray(data) && data.length > 0) {
+          setConversations(
+            data.map((d) => ({
+              id: d._id,
+              title: d.title,
+              preview: d.preview,
+              timestamp: d.timestamp,
+              pinned: d.pinned ?? false,
+            })),
+          );
+        }
+      })
+      .catch(() => {});
   }, []);
-
-  useEffect(() => {
-    if (conversations.length === 0) return;
-    try {
-      localStorage.setItem(CONV_STORAGE_KEY, JSON.stringify(conversations.slice(0, 50)));
-    } catch {}
-  }, [conversations]);
 
   const isNew = activeId === '';
   const activeConv = conversations.find((c) => c.id === activeId);
   const conversationTitle = activeConv?.title ?? 'New Conversation';
 
-  // Stable key: pendingNewId before first message, activeId after — same value, no remount
   const chatKey = isNew ? pendingNewId : activeId;
 
   const handleNewChat = useCallback(() => {
@@ -54,11 +54,22 @@ export default function Home() {
 
   const handleFirstMessage = useCallback(
     (title: string) => {
-      setConversations((prev) => [
-        { id: pendingNewId, title, preview: title, timestamp: 'Just now' },
-        ...prev,
-      ]);
+      const newConv: ConversationMeta = {
+        id: pendingNewId,
+        title,
+        preview: title,
+        timestamp: 'Just now',
+        pinned: false,
+      };
+      // Optimistic UI — add to list immediately
+      setConversations((prev) => [newConv, ...prev]);
       setActiveId(pendingNewId);
+      // Persist to DB
+      fetch('/api/conversations', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: pendingNewId, title, preview: title }),
+      }).catch(() => {});
     },
     [pendingNewId],
   );
@@ -67,15 +78,18 @@ export default function Home() {
     setConversations((prev) =>
       prev.map((c) => (c.id === id ? { ...c, title, preview: title } : c)),
     );
+    fetch(`/api/conversations/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title }),
+    }).catch(() => {});
   }, []);
 
   const handleDeleteConversation = useCallback((id: string) => {
-    // Remove the session's messages from localStorage
-    try { localStorage.removeItem(`aelius_chat_${id}`); } catch {}
     setConversations((prev) => prev.filter((c) => c.id !== id));
-    // If the deleted session was open, go back to a fresh new chat
     setActiveId((prev) => (prev === id ? '' : prev));
     setPendingNewId((prev) => (prev === id ? generateId() : prev));
+    fetch(`/api/conversations/${id}`, { method: 'DELETE' }).catch(() => {});
   }, []);
 
   const handleToggleSidebar = useCallback(() => {
@@ -87,7 +101,6 @@ export default function Home() {
       className="flex h-screen overflow-hidden bg-background-50"
       style={{ fontFamily: 'var(--font-body)' }}
     >
-      {/* Mobile backdrop */}
       {sidebarOpen && (
         <div
           className="fixed inset-0 z-40 bg-black/40 md:hidden"

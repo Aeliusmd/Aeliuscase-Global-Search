@@ -40,8 +40,6 @@ export default function ChatArea({
   const wasNewRef = useRef(isNew);
   const hasTitleRef = useRef(false);
 
-  const storageKey = `aelius_chat_${conversationId}`;
-
   const [transport] = useState(
     () => new DefaultChatTransport({ api: '/api/chat' }),
   );
@@ -49,28 +47,32 @@ export default function ChatArea({
   const { messages, sendMessage, status, setMessages } = useChat({ transport });
   const isLoading = status === 'submitted' || status === 'streaming';
 
-  // Restore messages from localStorage on mount only (guard against isNew prop change)
+  // Restore messages from DB on mount (existing sessions only)
   useEffect(() => {
     if (!isNew) {
-      try {
-        const raw = localStorage.getItem(storageKey);
-        if (raw) {
-          const stored = JSON.parse(raw) as UIMessage[];
-          if (stored.length > 0) setMessages(stored);
-        }
-      } catch {}
+      fetch(`/api/conversations/${conversationId}`)
+        .then((r) => r.json())
+        .then(({ data }: { data?: { messages?: UIMessage[] } }) => {
+          const stored = data?.messages;
+          if (Array.isArray(stored) && stored.length > 0) setMessages(stored);
+        })
+        .catch(() => {})
+        .finally(() => setHydrated(true));
+    } else {
+      setHydrated(true);
     }
-    setHydrated(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Persist messages
+  // Persist messages to DB after every AI reply completes
   useEffect(() => {
-    if (!hydrated || messages.length === 0) return;
-    try {
-      localStorage.setItem(storageKey, JSON.stringify(messages.slice(-100)));
-    } catch {}
-  }, [messages, hydrated, storageKey]);
+    if (!hydrated || messages.length === 0 || status !== 'ready') return;
+    fetch(`/api/conversations/${conversationId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ messages }),
+    }).catch(() => {});
+  }, [messages, hydrated, conversationId, status]);
 
   // Auto-scroll to bottom
   useEffect(() => {

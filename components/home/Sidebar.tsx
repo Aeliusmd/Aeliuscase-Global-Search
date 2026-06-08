@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { type Conversation } from '@/mocks/chatData';
+import type { ConversationMeta as Conversation } from '@/types/conversation';
 
 interface SidebarProps {
   activeId: string;
