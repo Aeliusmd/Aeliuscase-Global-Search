@@ -1,10 +1,12 @@
 'use client';
 
-import { useState, useRef, type KeyboardEvent } from 'react';
+import { useEffect, useState, useRef, type KeyboardEvent } from 'react';
 
 interface InputBarProps {
   onSend: (message: string) => void;
   disabled?: boolean;
+  autoFocus?: boolean;
+  showSuggestions?: boolean;
 }
 
 const SUGGESTIONS = [
@@ -14,10 +16,22 @@ const SUGGESTIONS = [
   { label: 'Search by case number',icon: 'ri-hashtag' },
 ];
 
-export default function InputBar({ onSend, disabled }: InputBarProps) {
+export default function InputBar({
+  onSend,
+  disabled,
+  autoFocus = false,
+  showSuggestions = true,
+}: InputBarProps) {
   const [value, setValue] = useState('');
   const [focused, setFocused] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    if (!autoFocus || disabled) return;
+
+    const timer = window.setTimeout(() => textareaRef.current?.focus(), 80);
+    return () => window.clearTimeout(timer);
+  }, [autoFocus, disabled]);
 
   const handleSend = () => {
     const trimmed = value.trim();
@@ -47,29 +61,31 @@ export default function InputBar({ onSend, disabled }: InputBarProps) {
   const canSend = value.trim().length > 0 && !disabled;
 
   return (
-    <div className="px-4 sm:px-6 py-4">
+    <div className={showSuggestions ? 'px-4 sm:px-6 py-4' : 'px-4 py-3'}>
       {/* Suggestion chips */}
-      <div className="flex items-center gap-2 mb-3 flex-wrap">
-        {SUGGESTIONS.map((s) => (
-          <button
-            key={s.label}
-            onClick={() => {
-              setValue(s.label);
-              textareaRef.current?.focus();
-            }}
-            className="flex items-center gap-1.5 px-3.5 py-1.5 min-h-[44px] rounded-full text-xs font-semibold
-              bg-primary-50 border border-primary-200 text-primary-700
-              hover:bg-primary-100 hover:border-primary-400 hover:text-primary-800 hover:shadow-sm
-              dark:bg-background-100 dark:border-background-300 dark:text-foreground-400
-              dark:hover:bg-background-200 dark:hover:border-background-400 dark:hover:text-foreground-300
-              transition-all duration-150 cursor-pointer whitespace-nowrap
-              focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-400"
-          >
-            <i className={`${s.icon} text-[11px] opacity-70`} />
-            {s.label}
-          </button>
-        ))}
-      </div>
+      {showSuggestions && (
+        <div className="flex items-center gap-2 mb-3 flex-wrap">
+          {SUGGESTIONS.map((s) => (
+            <button
+              key={s.label}
+              onClick={() => {
+                setValue(s.label);
+                textareaRef.current?.focus();
+              }}
+              className="flex items-center gap-1.5 px-3.5 py-1.5 min-h-[44px] rounded-full text-xs font-semibold
+                bg-primary-50 border border-primary-200 text-primary-700
+                hover:bg-primary-100 hover:border-primary-400 hover:text-primary-800 hover:shadow-sm
+                dark:bg-background-100 dark:border-background-300 dark:text-foreground-400
+                dark:hover:bg-background-200 dark:hover:border-background-400 dark:hover:text-foreground-300
+                transition-all duration-150 cursor-pointer whitespace-nowrap
+                focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-400"
+            >
+              <i className={`${s.icon} text-[11px] opacity-70`} />
+              {s.label}
+            </button>
+          ))}
+        </div>
+      )}
 
       {/* Input container — gradient border ring */}
       <div
@@ -114,6 +130,7 @@ export default function InputBar({ onSend, disabled }: InputBarProps) {
         {/* Textarea */}
         <textarea
           ref={textareaRef}
+          autoFocus={autoFocus}
           value={value}
           onChange={(e) => {
             setValue(e.target.value);

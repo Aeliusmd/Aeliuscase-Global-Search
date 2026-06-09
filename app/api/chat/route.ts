@@ -45,7 +45,7 @@ function detectSearchType(messages: UIMessage[]): number {
   // 1 — explicit override in the current message
   if (/\b(open|active|current|pending|not closed)\b/.test(text)) return 2;
   if (/\b(clos(e|ed|es|ing)?|resolv(e|ed)?|settl(e|ed)?|complet(e|ed)?|done|finish(ed)?)\b/.test(text)) return 3;
-  if (/\bsub[\s-]?out\b/.test(text)) return 4;
+  if (/\bsub[\s-]?out\b|\bsub[\s-]?d[\s-]?in\b|\bsubbed[\s-]?in\b|\bsub'd\s?in\b/.test(text)) return 4;
 
   // 2 — carry forward the most recent tool result's searchType
   for (const msg of [...messages].reverse()) {
@@ -135,18 +135,21 @@ the most specific searchText possible. Stack filters progressively:
   Step 3 — User says "cases in 2024"
            → searchType=2 (still open), searchText="Maria 2024"
 
-  Step 4 — User changes filter "now show closed"
-           → searchType=3, searchText="Maria 2024" (keyword carries forward)
+  Step 4 — User says "now show closed" / "filter only open" / "sub-d in cases"
+           → ONLY the searchType changes. searchText="Maria 2024" carries forward unchanged.
+           → This is a STATUS-ONLY filter. Do NOT clear or change searchText.
 
 Rules for searchText:
+- When the user ONLY changes the status filter (open/closed/sub-out/sub-d in/all),
+  keep the EXACT same searchText from the last search — do not add or remove anything.
 - COMBINE the keyword from the last search with any NEW name/number/keyword the user adds.
 - If the user explicitly replaces the topic (different person, different case), start fresh.
 - For date hints: append the year or month as a keyword (e.g. "Maria 2024", "RP2292 Jan").
-- NEVER include status words ("open", "closed") in searchText — status is in searchType.
+- NEVER include status words ("open", "closed", "sub-out") in searchText — status is in searchType.
 - Keep searchText SHORT — name, case number, or keyword only.
 
 searchType values:
-- 1 = All Cases  2 = Open only  3 = Closed only  4 = Sub-Out only
+- 1 = All Cases  2 = Open only  3 = Closed only  4 = Sub-Out only  ("Sub-d In" = Sub-Out = 4)
 
 ━━━ GENERAL RULES ━━━
 1. Greetings or general questions → reply warmly in 1-2 sentences. Do NOT call any tool.

@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useChat } from '@ai-sdk/react';
 import { DefaultChatTransport } from 'ai';
 import type { UIMessage } from 'ai';
-import type { CaseSearchItem, MainSearchType, PagedApiResponse, SearchToolOutput } from '@/types/case';
+import type { CaseSearchItem, PagedApiResponse, SearchToolOutput } from '@/types/case';
 import MessageBubble, { type OnLoadMore } from './MessageBubble';
 import InputBar from './InputBar';
 import ThemeToggle from '@/components/ThemeToggle';
@@ -20,21 +20,30 @@ interface ChatAreaProps {
   conversationTitle: string;
   conversationId: string;
   isNew: boolean;
+  variant?: 'full' | 'widget';
   onFirstMessage?: (title: string) => void;
   onUpdateTitle?: (id: string, title: string) => void;
   onToggleSidebar?: () => void;
+  onMaximize?: () => void;
+  onMinimize?: () => void;
+  onClose?: () => void;
 }
 
 export default function ChatArea({
   conversationTitle,
   conversationId,
   isNew,
+  variant = 'full',
   onFirstMessage,
   onUpdateTitle,
   onToggleSidebar,
+  onMaximize,
+  onMinimize,
+  onClose,
 }: ChatAreaProps) {
   const [hydrated, setHydrated] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const isWidget = variant === 'widget';
 
   // Track whether this chat session started as new (for title generation)
   const wasNewRef = useRef(isNew);
@@ -171,15 +180,21 @@ export default function ChatArea({
   return (
     <div className="flex flex-col flex-1 min-w-0 h-full bg-background-50">
       {/* Header */}
-      <div className="flex items-center justify-between px-4 sm:px-6 py-3.5 border-b border-background-200 bg-background-50/90 backdrop-blur-sm relative md:sticky md:top-0 z-10">
+      <div
+        className={`flex items-center justify-between border-b border-background-200 bg-background-50/90 backdrop-blur-sm relative md:sticky md:top-0 z-10 ${
+          isWidget ? 'px-3 py-3' : 'px-4 sm:px-6 py-3.5'
+        }`}
+      >
         <div className="flex items-center gap-2 min-w-0">
-          <button
-            className="flex md:hidden items-center justify-center w-11 h-11 -ml-1 rounded-lg hover:bg-background-100 transition-colors flex-shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-400"
-            onClick={onToggleSidebar}
-            aria-label="Open navigation"
-          >
-            <i className="ri-menu-line text-lg text-foreground-700" />
-          </button>
+          {!isWidget && (
+            <button
+              className="flex md:hidden items-center justify-center w-11 h-11 -ml-1 rounded-lg hover:bg-background-100 transition-colors flex-shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-400"
+              onClick={onToggleSidebar}
+              aria-label="Open navigation"
+            >
+              <i className="ri-menu-line text-lg text-foreground-700" />
+            </button>
+          )}
           <div
             className="w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 shadow-sm"
             style={{ background: 'linear-gradient(135deg, #3DC0EC 0%, #6763AC 100%)' }}
@@ -209,16 +224,67 @@ export default function ChatArea({
             </div>
           </div>
         </div>
-        <ThemeToggle />
+        <div className="flex items-center gap-1.5">
+          <ThemeToggle />
+          {isWidget ? (
+            <>
+              <button
+                type="button"
+                onClick={onMaximize}
+                className="flex h-10 w-10 items-center justify-center rounded-lg text-foreground-700 transition-colors hover:bg-background-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-400"
+                title="Maximize"
+                aria-label="Maximize chat"
+              >
+                <i className="ri-fullscreen-line text-base" />
+              </button>
+              <button
+                type="button"
+                onClick={onClose}
+                className="flex h-10 w-10 items-center justify-center rounded-lg text-foreground-700 transition-colors hover:bg-background-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-400"
+                title="Close"
+                aria-label="Close chat"
+              >
+                <i className="ri-close-line text-lg" />
+              </button>
+            </>
+          ) : (
+            <>
+              <button
+                type="button"
+                onClick={onMinimize}
+                className="flex h-10 w-10 items-center justify-center rounded-lg text-foreground-700 transition-colors hover:bg-background-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-400"
+                title="Minimize"
+                aria-label="Minimize chat"
+              >
+                <i className="ri-fullscreen-exit-line text-base" />
+              </button>
+              <button
+                type="button"
+                onClick={onClose}
+                className="flex h-10 w-10 items-center justify-center rounded-lg text-foreground-700 transition-colors hover:bg-background-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-400"
+                title="Close"
+                aria-label="Close chat"
+              >
+                <i className="ri-close-line text-lg" />
+              </button>
+            </>
+          )}
+        </div>
       </div>
 
       {/* Body */}
       {showEmptyState ? (
         /* Empty / welcome state */
-        <div className="flex-1 flex flex-col items-center justify-center px-4 sm:px-6">
-          <div className="text-center max-w-md">
+        <div
+          className={
+            isWidget
+              ? 'flex-1 overflow-y-auto px-5 py-5'
+              : 'flex-1 flex flex-col items-center justify-center px-4 sm:px-6'
+          }
+        >
+          <div className={isWidget ? 'mx-auto max-w-md text-center' : 'text-center max-w-md'}>
             {/* Animated gradient orb */}
-            <div className="relative mx-auto w-20 h-20 mb-6">
+            <div className={isWidget ? 'hidden' : 'relative mx-auto w-20 h-20 mb-6'}>
               <div
                 className="absolute inset-0 rounded-2xl opacity-40 animate-pulse"
                 style={{
@@ -234,12 +300,12 @@ export default function ChatArea({
               </div>
             </div>
             <h3
-              className="text-xl font-semibold text-foreground-900 mb-2"
+              className={`${isWidget ? 'text-lg' : 'text-xl'} font-semibold text-foreground-900 mb-2 leading-tight`}
               style={{ fontFamily: 'var(--font-heading)' }}
             >
               Search Aeliuscase
             </h3>
-            <p className="text-sm text-foreground-600 mb-8 leading-relaxed">
+            <p className={`${isWidget ? 'mb-5' : 'mb-8'} text-sm text-foreground-600 leading-relaxed`}>
               Ask me to find cases by number, applicant name, company, or keyword. Select a filter
               above to narrow by case status.
             </p>
@@ -303,7 +369,12 @@ export default function ChatArea({
 
       {/* Input */}
       <div className="border-t border-background-200 bg-background-50 safe-bottom">
-        <InputBar onSend={handleSend} disabled={isLoading} />
+        <InputBar
+          onSend={handleSend}
+          disabled={isLoading}
+          autoFocus={isWidget}
+          showSuggestions={!isWidget}
+        />
       </div>
     </div>
   );
