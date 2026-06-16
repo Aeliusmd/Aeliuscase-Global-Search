@@ -303,11 +303,11 @@ export default function ChatArea({
               className={`${isWidget ? 'text-lg' : 'text-xl'} font-semibold text-foreground-900 mb-2 leading-tight`}
               style={{ fontFamily: 'var(--font-heading)' }}
             >
-              Search Aeliuscase
+              Aeliuscase AI Assistant
             </h3>
             <p className={`${isWidget ? 'mb-5' : 'mb-8'} text-sm text-foreground-600 leading-relaxed`}>
-              Ask me to find cases by number, applicant name, company, or keyword. Select a filter
-              above to narrow by case status.
+              Search cases by number, name, or keyword — or ask how to use AeliusCase.
+              I answer from the case database and the AeliusCase User Guide.
             </p>
             <div className="flex flex-wrap justify-center gap-2">
               {SUGGESTION_CHIPS.map((chip) => (
@@ -332,8 +332,8 @@ export default function ChatArea({
             <div className="flex justify-start msg-animate">
               <div className="bg-background-100 border border-background-200 rounded-2xl rounded-tl-sm px-4 py-3 shadow-sm">
                 <p className="text-sm text-foreground-700 leading-relaxed">
-                  Hello! I can help you search for legal cases. Type a case number, applicant name,
-                  or keyword to get started.
+                  Hello! I can help you search for legal cases or answer questions about
+                  how to use AeliusCase. What would you like to do?
                 </p>
               </div>
             </div>

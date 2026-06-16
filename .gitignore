@@ -38,3 +38,8 @@ CLAUDE.md
 src/
 tests/
 detections/
+
+# Documents — large files, kept local only
+*.docx
+*.doc
+*.pdf

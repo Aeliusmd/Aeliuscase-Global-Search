@@ -2,6 +2,7 @@ import { openai } from '@ai-sdk/openai';
 import { convertToModelMessages, stepCountIs, streamText, tool, zodSchema } from 'ai';
 import type { UIMessage } from 'ai';
 import { z } from 'zod';
+import OpenAI from 'openai';
 import type { SearchToolOutput } from '@/types/case';
 import { searchCasesPaginated } from '@/lib/caseSearch';
 
@@ -82,6 +83,35 @@ function getLastSearchContext(messages: UIMessage[]): string {
   return 'none';
 }
 
+/**
+ * Search the OpenAI Vector Store for User Guide chunks relevant to the user's message.
+ * Returns the top chunks joined as plain text, or an empty string if unavailable.
+ */
+async function fetchGuideContext(userMessage: string): Promise<string> {
+  const vsId = process.env.OPENAI_VECTOR_STORE_ID;
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!vsId || !apiKey || !userMessage.trim()) return '';
+
+  try {
+    const client = new OpenAI({ apiKey });
+    const page = await client.vectorStores.search(vsId, {
+      query: userMessage,
+      max_num_results: 5,
+    });
+
+    const chunks = page.data
+      .filter((r) => r.score > 0.25)
+      .flatMap((r) => r.content)
+      .map((c) => c.text)
+      .filter(Boolean)
+      .join('\n\n');
+
+    return chunks;
+  } catch {
+    return '';
+  }
+}
+
 export async function POST(req: Request) {
   const jwtToken = process.env.JWT_TOKEN;
   const apiBaseUrl = process.env.API_BASE_URL;
@@ -115,9 +145,45 @@ export async function POST(req: Request) {
   // while preserving enough turns for multi-step filter refinement.
   const contextMessages = messages.slice(-CONTEXT_WINDOW);
 
+  // Fetch User Guide context in parallel with message preparation.
+  const lastUserText = (
+    [...messages].reverse().find((m) => m.role === 'user')?.parts
+      ?.find((p) => p.type === 'text') as { type: 'text'; text: string } | undefined
+  )?.text ?? '';
+
+  const [guideContext, modelMessages] = await Promise.all([
+    fetchGuideContext(lastUserText),
+    convertToModelMessages(contextMessages),
+  ]);
+
+  const guideSection = guideContext
+    ? `━━━ AELIUSCASE USER GUIDE — RELEVANT EXCERPTS ━━━
+Use the following excerpts to answer questions about AeliusCase features, procedures, and usage.
+
+${guideContext}
+━━━ END OF GUIDE EXCERPTS ━━━`
+    : '';
+
   const result = streamText({
     model: openai('gpt-4o-mini'),
-    system: `You are a smart legal case search assistant for Aeliuscase, a law firm case management platform.
+    system: `You are a smart assistant for Aeliuscase, a law firm case management platform.
+You help with two things only:
+  A) Searching cases in the database → use the searchCases tool.
+  B) Answering questions about AeliusCase features and usage → use the User Guide excerpts below.
+
+${guideSection}
+
+━━━ HOW TO RESPOND ━━━
+• Case search (find/show/look up cases) → call searchCases immediately. Never skip this.
+• "What is AeliusCase", "how do I…", "what does X do", feature questions → answer from the User Guide excerpts above. Be helpful and specific. If the exact detail isn't in the excerpts, say you don't have that specific information from the guide.
+• Greetings → reply warmly in 1-2 sentences.
+• Questions completely unrelated to AeliusCase (world events, cooking, etc.) → reply: "I can only help with AeliusCase case searches and User Guide questions."
+• After a tool result → ONE short sentence only (e.g. "Found 12 open cases for Maria.").
+  NEVER list case numbers, names, employers, or any case details in text — the UI renders them automatically.
+  Do NOT repeat or describe what is already shown in the result cards.
+• Zero results → one sentence: suggest a broader or alternative search term.
+
+Do NOT answer general knowledge questions about the world, technology trends, or anything outside AeliusCase.
 
 LAST SEARCH IN THIS SESSION: ${lastSearchContext}
 CURRENT ENFORCED FILTER (server-side): ${enforcedLabel} (searchType=${enforcedSearchType})
@@ -139,25 +205,30 @@ the most specific searchText possible. Stack filters progressively:
            → ONLY the searchType changes. searchText="Maria 2024" carries forward unchanged.
            → This is a STATUS-ONLY filter. Do NOT clear or change searchText.
 
+  Step 5 — User says "based on above cases only send me RP0036 cases"
+    (or: "from the above", "from those results", "from what you showed", "filter from these",
+         "within those", "of those cases", "narrow down to", "from those")
+           → ALWAYS additive. APPEND new keyword to existing searchText.
+           → searchType=2 (unchanged), searchText="Maria RP0036"
+           → NEVER reset to just "RP0036" alone when a back-reference phrase is used.
+
 Rules for searchText:
 - When the user ONLY changes the status filter (open/closed/sub-out/sub-d in/all),
   keep the EXACT same searchText from the last search — do not add or remove anything.
 - COMBINE the keyword from the last search with any NEW name/number/keyword the user adds.
-- If the user explicitly replaces the topic (different person, different case), start fresh.
+- ADDITIVE TRIGGER PHRASES — if the user message contains any of these, ALWAYS append
+  the new keyword to the existing searchText, NEVER replace it:
+  "based on above", "from the above", "from those results", "from what you showed",
+  "filter from", "from those cases", "narrow down", "within those", "of those", "from above".
+- Topic replacement ONLY when the user starts a completely new search with NO back-reference
+  phrase (e.g. "actually find John Smith instead", "forget that, search RP9999").
 - For date hints: append the year or month as a keyword (e.g. "Maria 2024", "RP2292 Jan").
 - NEVER include status words ("open", "closed", "sub-out") in searchText — status is in searchType.
 - Keep searchText SHORT — name, case number, or keyword only.
 
 searchType values:
-- 1 = All Cases  2 = Open only  3 = Closed only  4 = Sub-Out only  ("Sub-d In" = Sub-Out = 4)
-
-━━━ GENERAL RULES ━━━
-1. Greetings or general questions → reply warmly in 1-2 sentences. Do NOT call any tool.
-2. Any request to find/show/look up a case → ALWAYS call searchCases immediately.
-3. After a tool result → one brief summary line (e.g. "Found 12 open cases for Maria.").
-4. Zero results → suggest a broader or alternative search term.
-5. Keep all responses short and professional.`,
-    messages: await convertToModelMessages(contextMessages),
+- 1 = All Cases  2 = Open only  3 = Closed only  4 = Sub-Out only  ("Sub-d In" = Sub-Out = 4)`,
+    messages: modelMessages,
     stopWhen: stepCountIs(5),
     tools: {
       searchCases: tool({

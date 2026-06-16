@@ -139,7 +139,7 @@ export default function InputBar({
           onKeyDown={handleKeyDown}
           onFocus={() => setFocused(true)}
           onBlur={() => setFocused(false)}
-          placeholder="Search cases by name, number, or applicant..."
+          placeholder="Search cases or ask how to use AeliusCase…"
           rows={1}
           disabled={disabled}
           className="flex-1 resize-none bg-transparent text-sm text-foreground-900 placeholder-secondary-400 dark:placeholder-foreground-600 outline-none leading-relaxed min-h-[24px] max-h-[160px] overflow-y-auto"
