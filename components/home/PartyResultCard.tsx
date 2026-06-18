@@ -4,11 +4,7 @@ import type { PartiesToolOutput } from '@/types/caseParties';
 
 export default function PartyResultCard({ result }: { result: PartiesToolOutput }) {
   if (!result.success) {
-    return (
-      <div className="bg-red-50 border border-red-200 rounded-2xl rounded-tl-sm px-4 py-3">
-        <p className="text-sm text-red-700">{result.error ?? 'Failed to load parties.'}</p>
-      </div>
-    );
+    return null;
   }
 
   const parties = result.parties ?? [];
