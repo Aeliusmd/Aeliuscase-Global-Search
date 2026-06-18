@@ -5,6 +5,8 @@ import { z } from 'zod';
 import OpenAI from 'openai';
 import type { SearchToolOutput } from '@/types/case';
 import { searchCasesPaginated } from '@/lib/caseSearch';
+import { fetchCaseParties } from '@/lib/caseParties';
+import type { PartiesToolOutput } from '@/types/caseParties';
 
 export const maxDuration = 30;
 
@@ -182,6 +184,7 @@ ${guideSection}
   NEVER list case numbers, names, employers, or any case details in text — the UI renders them automatically.
   Do NOT repeat or describe what is already shown in the result cards.
 • Zero results → one sentence: suggest a broader or alternative search term.
+• Party/contact/document requests for a specific case ("show parties for RP00001", "who is on case 12345", "get contacts for RP00056") → call getCaseParties immediately.
 
 Do NOT answer general knowledge questions about the world, technology trends, or anything outside AeliusCase.
 
@@ -309,6 +312,29 @@ searchType values:
               searchType,
             };
           }
+        },
+      }),
+      getCaseParties: tool({
+        description:
+          'Fetch all parties (insurance carriers, applicants, employers, etc.) and their documents for a specific AeliusCase case. Call this when the user asks about parties, contacts, or documents for a specific case number or case ID.',
+        inputSchema: zodSchema(
+          z.object({
+            caseNumber: z
+              .string()
+              .optional()
+              .describe('Case number string, e.g. "RP00001". Prefer this over caseId when available.'),
+            caseId: z
+              .number()
+              .int()
+              .optional()
+              .describe('Numeric case ID. Use only when caseNumber is not known.'),
+          }).refine((d) => d.caseNumber !== undefined || d.caseId !== undefined, {
+            message: 'Provide caseNumber or caseId.',
+          }),
+        ),
+        execute: async (input): Promise<PartiesToolOutput> => {
+          const { caseNumber, caseId } = input as { caseNumber?: string; caseId?: number };
+          return fetchCaseParties({ apiBaseUrl, jwtToken, caseNumber, caseId });
         },
       }),
     },

@@ -4,6 +4,8 @@ import { useState } from 'react';
 import type { UIMessage } from 'ai';
 import type { CaseSearchItem, MainSearchType, SearchToolOutput } from '@/types/case';
 import CaseResultList from './CaseResultList';
+import type { PartiesToolOutput } from '@/types/caseParties';
+import PartyResultCard from './PartyResultCard';
 
 interface ToolPart {
   type: string;
@@ -11,6 +13,14 @@ interface ToolPart {
   state: 'input-streaming' | 'input-available' | 'output-available' | 'output-error' | string;
   input?: { searchText?: string; searchType?: number; page?: number };
   output?: SearchToolOutput;
+}
+
+interface PartiesToolPart {
+  type: string;
+  toolCallId: string;
+  state: string;
+  input?: { caseNumber?: string; caseId?: number };
+  output?: PartiesToolOutput;
 }
 
 export type OnLoadMore = (
@@ -280,6 +290,36 @@ export default function MessageBubble({ message, onLoadMore }: MessageBubbleProp
                   page={result.page}
                   hasMorePages={result.hasMorePages}
                   onLoadMore={onLoadMore}
+                />
+              );
+            }
+          }
+
+          if (rawPart.type === 'tool-getCaseParties') {
+            const part = rawPart as unknown as PartiesToolPart;
+
+            if (part.state === 'input-streaming' || part.state === 'input-available') {
+              const ref = part.input?.caseNumber ?? (part.input?.caseId ? `case ${part.input.caseId}` : '...');
+              return (
+                <div
+                  key={`${message.id}-pc${idx}`}
+                  className="flex items-center gap-2 text-xs py-1"
+                  style={{ color: '#6763AC' }}
+                >
+                  <svg className="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                  </svg>
+                  <span>Fetching parties for &ldquo;{ref}&rdquo;&hellip;</span>
+                </div>
+              );
+            }
+
+            if (part.state === 'output-available' && part.output) {
+              return (
+                <PartyResultCard
+                  key={`${message.id}-pr${idx}`}
+                  result={part.output}
                 />
               );
             }

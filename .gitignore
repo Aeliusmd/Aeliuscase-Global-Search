@@ -39,6 +39,9 @@ src/
 tests/
 detections/
 
+# Agent-generated planning docs — kept local only
+docs/
+
 # Documents — large files, kept local only
 *.docx
 *.doc
