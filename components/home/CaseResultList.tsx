@@ -135,13 +135,7 @@ export default function CaseResultList({
   };
 
   if (displayedCases.length === 0) {
-    return (
-      <div className="bg-background-50 border border-background-200 rounded-2xl rounded-tl-sm px-4 py-3 shadow-sm">
-        <p className="text-sm text-foreground-600 italic">
-          No cases found for &ldquo;{query}&rdquo;. Try a different name, case number, or keyword.
-        </p>
-      </div>
-    );
+    return null;
   }
 
   const navBtnBase =

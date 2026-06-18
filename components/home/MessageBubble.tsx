@@ -339,20 +339,6 @@ export default function MessageBubble({ message, onLoadMore }: MessageBubbleProp
             >
               <i className={`text-xs ${copied ? 'ri-check-line text-accent-500' : 'ri-file-copy-line text-secondary-400'}`} />
             </button>
-            <button
-              className="w-9 h-9 flex items-center justify-center rounded hover:bg-background-200 transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-400"
-              title="Thumbs up"
-              aria-label="Thumbs up"
-            >
-              <i className="ri-thumb-up-line text-xs text-secondary-400" />
-            </button>
-            <button
-              className="w-9 h-9 flex items-center justify-center rounded hover:bg-background-200 transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-400"
-              title="Thumbs down"
-              aria-label="Thumbs down"
-            >
-              <i className="ri-thumb-down-line text-xs text-secondary-400" />
-            </button>
           </div>
         )}
       </div>
