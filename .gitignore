@@ -46,3 +46,7 @@ docs/
 *.docx
 *.doc
 *.pdf
+
+# Local screenshots and HTML exports — kept local only
+*.png
+*.html

@@ -1,12 +1,10 @@
 import { openai } from '@ai-sdk/openai';
-import { convertToModelMessages, stepCountIs, streamText, tool, zodSchema } from 'ai';
+import { convertToModelMessages, stepCountIs, streamText } from 'ai';
 import type { UIMessage } from 'ai';
-import { z } from 'zod';
 import OpenAI from 'openai';
-import type { SearchToolOutput } from '@/types/case';
-import { searchCasesPaginated } from '@/lib/caseSearch';
-import { fetchCaseParties } from '@/lib/caseParties';
-import type { PartiesToolOutput } from '@/types/caseParties';
+import { classifyIntents } from '@/lib/tools/intentRouter';
+import { buildToolRegistry } from '@/lib/tools/registry';
+import { selectToolsForIntents } from '@/lib/tools/selector';
 
 export const maxDuration = 30;
 
@@ -27,6 +25,90 @@ type ToolPart = {
   output?: { searchType?: number; searchText?: string; totalRecords?: number };
 };
 
+/** Pull the plain text out of a UIMessage (first text part). */
+function textOf(msg: UIMessage | undefined): string {
+  if (!msg) return '';
+  return (
+    (msg.parts?.find((p) => p.type === 'text') as { type: 'text'; text: string } | undefined)?.text ?? ''
+  );
+}
+
+/** Map an explicit status keyword in a message to a searchType (0 = none found). */
+function explicitStatusFromText(text: string): number {
+  const t = text.toLowerCase();
+  if (/\b(open|active|current|pending|not closed)\b/.test(t)) return 2;
+  if (/\b(clos(e|ed|es|ing)?|resolv(e|ed)?|settl(e|ed)?|complet(e|ed)?|done|finish(ed)?)\b/.test(t)) return 3;
+  if (/\bsub[\s-]?out\b|\bsub[\s-]?d[\s-]?in\b|\bsubbed[\s-]?in\b|\bsub'd\s?in\b/.test(t)) return 4;
+  return 0;
+}
+
+/**
+ * Detect a request that references a PERSON by name to find their cases, e.g.
+ * "julia's open cases", "cases for Maria", "Raj ge cases". Returns the extracted
+ * name, or null when the message is not a clear person-name search (case numbers,
+ * "these cases", company suffixes, etc. are rejected). Used to deterministically
+ * force the staff-or-client question even when no other filter is present — the
+ * model alone does not reliably ask.
+ */
+function detectBarePersonName(text: string): string | null {
+  const patterns = [
+    // "X's [open] cases" / possessive
+    /\b([a-z]+(?:\s+[a-z]+){0,2})'s\s+(?:open\s+|closed\s+|active\s+|pending\s+|sub[\s-]?out\s+|all\s+)?cases\b/i,
+    // "cases for/of/by X" (handled by / assigned to are staff-signalled elsewhere)
+    /\bcases?\s+(?:for|of|belonging\s+to|by)\s+([a-z]+(?:\s+[a-z]+){0,2})\b/i,
+    // Singlish "X ge cases"
+    /\b([a-z]+(?:\s+[a-z]+){0,2})\s+ge\s+cases\b/i,
+  ];
+  const STOP = new Set([
+    'all', 'these', 'those', 'this', 'that', 'my', 'the', 'his', 'her', 'their',
+    'our', 'your', 'above', 'open', 'closed', 'active', 'pending', 'rush', 'me',
+    'client', 'applicant', 'staff', 'attorney', 'paralegal', 'coordinator', 'everyone',
+    'recent', 'new', 'old', 'some', 'any', 'more', 'other', 'such',
+  ]);
+  // Leading filler verbs/pronouns to peel off the front of a capture, and
+  // trailing connectors to trim from the end, so we keep just the name.
+  const LEAD = new Set([
+    'show', 'me', 'send', 'give', 'gimme', 'find', 'get', 'list', 'pull', 'fetch',
+    'bring', 'display', 'see', 'check', 'please', 'can', 'you', 'us', 'also', 'now',
+    'the', 'my', 'a', 'an', 'to', 'do', 'i', 'want', 'need', 'look', 'up', 'all',
+  ]);
+  const TRAIL = new Set(['in', 'with', 'on', 'at', 'today', 'now', 'please', 'and', 'for', 'open', 'closed', 'cases', 'case']);
+  const COMPANY = /\b(inc|llc|corp|ltd|co|company|services|trucking|markets|hospital|group|systems|industries|enterprises)\b/i;
+
+  for (const re of patterns) {
+    const m = text.match(re);
+    if (!m?.[1]) continue;
+    let words = m[1].trim().split(/\s+/);
+    while (words.length && LEAD.has(words[0].toLowerCase())) words.shift();
+    while (words.length && TRAIL.has(words[words.length - 1].toLowerCase())) words.pop();
+    if (words.length > 3) words = words.slice(-3);                   // a name is ≤3 words; keep the tail
+    const name = words.join(' ');
+    if (!name) continue;
+    if (/\d/.test(name)) continue;                                   // case numbers / years
+    if (COMPANY.test(name)) continue;                                // employer, not a person
+    if (words.some((w) => w.length < 2)) continue;                   // stray single letters
+    if (words.every((w) => STOP.has(w.toLowerCase()))) continue;     // pronouns / keywords only
+    return name;
+  }
+  return null;
+}
+
+/**
+ * When the assistant's most recent message was the "staff member or
+ * applicant/client?" disambiguation question, the current user message is just a
+ * short answer ("applicant") that has lost the original filter words. Return the
+ * PRIOR user message so intent classification + status detection can recover the
+ * venue/type/status context and re-expose combinedSearch. Empty when not in a
+ * clarification turn.
+ */
+function getClarificationPriorText(messages: UIMessage[]): string {
+  const lastAssistant = [...messages].reverse().find((m) => m.role === 'assistant');
+  const atext = textOf(lastAssistant);
+  if (!/staff member.*applicant\/client|applicant\/client.*staff member/i.test(atext)) return '';
+  const users = messages.filter((m) => m.role === 'user');
+  return users.length >= 2 ? textOf(users[users.length - 2]) : '';
+}
+
 /**
  * Detect the intended searchType.
  *
@@ -40,15 +122,9 @@ function detectSearchType(messages: UIMessage[]): number {
   const lastUser = [...messages].reverse().find((m) => m.role === 'user');
   if (!lastUser) return 1;
 
-  const text = (
-    (lastUser.parts?.find((p) => p.type === 'text') as { type: 'text'; text: string } | undefined)
-      ?.text ?? ''
-  ).toLowerCase();
-
   // 1 — explicit override in the current message
-  if (/\b(open|active|current|pending|not closed)\b/.test(text)) return 2;
-  if (/\b(clos(e|ed|es|ing)?|resolv(e|ed)?|settl(e|ed)?|complet(e|ed)?|done|finish(ed)?)\b/.test(text)) return 3;
-  if (/\bsub[\s-]?out\b|\bsub[\s-]?d[\s-]?in\b|\bsubbed[\s-]?in\b|\bsub'd\s?in\b/.test(text)) return 4;
+  const explicit = explicitStatusFromText(textOf(lastUser));
+  if (explicit) return explicit;
 
   // 2 — carry forward the most recent tool result's searchType
   for (const msg of [...messages].reverse()) {
@@ -103,10 +179,12 @@ async function fetchGuideContext(userMessage: string): Promise<string> {
 
     const chunks = page.data
       .filter((r) => r.score > 0.25)
+      .slice(0, 3)                          // max 3 chunks
       .flatMap((r) => r.content)
       .map((c) => c.text)
       .filter(Boolean)
-      .join('\n\n');
+      .join('\n\n')
+      .slice(0, 3000);                      // hard cap ~750 tokens
 
     return chunks;
   } catch {
@@ -114,11 +192,33 @@ async function fetchGuideContext(userMessage: string): Promise<string> {
   }
 }
 
+/**
+ * Strip large `cases` arrays from historical tool outputs before converting to
+ * model messages. The model rendered those results already — it doesn't need to
+ * re-read hundreds of case objects in the context window. Keeps the summary
+ * fields (totalRecords, searchText, etc.) so the model still knows what was found.
+ */
+function trimToolOutputs(messages: UIMessage[]): UIMessage[] {
+  return messages.map((msg) => {
+    if (msg.role !== 'assistant') return msg;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const parts = (msg.parts ?? []).map((part: any) => {
+      if (typeof part.type !== 'string' || !part.type.startsWith('tool-')) return part;
+      if (!part.output || !Array.isArray(part.output.cases)) return part;
+      return { ...part, output: { ...part.output, cases: [] } };
+    });
+    return { ...msg, parts } as UIMessage;
+  });
+}
+
 export async function POST(req: Request) {
   const jwtToken = process.env.JWT_TOKEN;
   const apiBaseUrl = process.env.API_BASE_URL;
 
+  console.log('[/api/chat] POST — jwt:', !!jwtToken, '| apiBase:', !!apiBaseUrl, '| openai:', !!process.env.OPENAI_API_KEY);
+
   if (!jwtToken || !apiBaseUrl) {
+    console.error('[/api/chat] Missing JWT_TOKEN or API_BASE_URL');
     return Response.json(
       { error: 'Server configuration error: JWT_TOKEN or API_BASE_URL is not set.' },
       { status: 500 },
@@ -126,17 +226,34 @@ export async function POST(req: Request) {
   }
 
   if (!process.env.OPENAI_API_KEY) {
+    console.error('[/api/chat] Missing OPENAI_API_KEY');
     return Response.json(
       { error: 'OPENAI_API_KEY is not configured.', isConfigError: true },
       { status: 500 },
     );
   }
 
-  const { messages } = (await req.json()) as { messages: UIMessage[] };
+  let messages: UIMessage[];
+  try {
+    const body = await req.json() as { messages: UIMessage[] };
+    messages = body.messages;
+  } catch (err) {
+    console.error('[/api/chat] req.json() failed:', err);
+    return Response.json({ error: 'Invalid request body' }, { status: 400 });
+  }
+
+  // If this is a clarification answer to the "staff member or applicant/client?"
+  // question, recover the prior request's words so the filters + status aren't
+  // lost on this turn.
+  const clarificationPrior = getClarificationPriorText(messages);
 
   // Detect searchType scanning the FULL history (so carry-forward works even
   // when older messages are outside the context window).
-  const enforcedSearchType = detectSearchType(messages);
+  let enforcedSearchType = detectSearchType(messages);
+  if (enforcedSearchType === 1 && clarificationPrior) {
+    const s = explicitStatusFromText(clarificationPrior);
+    if (s) enforcedSearchType = s;
+  }
   const enforcedLabel = SEARCH_TYPE_LABELS[enforcedSearchType];
 
   // Last search context injected into the system prompt so the AI knows the
@@ -153,10 +270,30 @@ export async function POST(req: Request) {
       ?.find((p) => p.type === 'text') as { type: 'text'; text: string } | undefined
   )?.text ?? '';
 
-  const [guideContext, modelMessages] = await Promise.all([
-    fetchGuideContext(lastUserText),
-    convertToModelMessages(contextMessages),
-  ]);
+  // Text used for INTENT classification. On a clarification turn, prepend the
+  // prior request so venue/type/date intents resurface and combinedSearch is
+  // exposed for the routed name.
+  const classifyText = clarificationPrior ? `${clarificationPrior} ${lastUserText}` : lastUserText;
+
+  // Deterministic STAFF-vs-CLIENT signal from the user's own words (current turn
+  // + any clarification answer). Governs combinedSearch name routing so a bare
+  // name is never silently assumed to be staff — the tool asks instead.
+  const personSignal: 'staff' | 'applicant' | 'none' =
+    /\b(applicant|claimant|injured\s+worker|client)\b/i.test(classifyText) ? 'applicant'
+      : /\b(attorney|paralegal|coordinator|legal\s+secretary|legal\s+assistant|staff(\s+member)?|handled\s+by|assigned\s+to)\b/i.test(classifyText) ? 'staff'
+        : 'none';
+
+  let guideContext: string;
+  let modelMessages: Awaited<ReturnType<typeof convertToModelMessages>>;
+  try {
+    [guideContext, modelMessages] = await Promise.all([
+      fetchGuideContext(lastUserText),
+      convertToModelMessages(trimToolOutputs(contextMessages)),
+    ]);
+  } catch (err) {
+    console.error('[/api/chat] convertToModelMessages failed:', err);
+    return Response.json({ error: 'Message preparation failed', detail: String(err) }, { status: 500 });
+  }
 
   const guideSection = guideContext
     ? `━━━ AELIUSCASE USER GUIDE — RELEVANT EXCERPTS ━━━
@@ -166,7 +303,32 @@ ${guideContext}
 ━━━ END OF GUIDE EXCERPTS ━━━`
     : '';
 
-  const result = streamText({
+  // Deterministic bare-name gate: when the user references a person by name with
+  // NO staff/client signal (and we're not already mid-clarification), force the
+  // staff-or-client question by withholding ALL tools and giving an explicit
+  // directive. The model cannot search without tools, so it must ask first.
+  const bareName = !clarificationPrior && personSignal === 'none'
+    ? detectBarePersonName(lastUserText)
+    : null;
+
+  const bareNameDirective = bareName
+    ? `
+
+‼️ THIS TURN — MANDATORY OVERRIDE: The user referred to a person by name ("${bareName}") without indicating whether they are a staff member or an applicant/client, and it is not yet established. You have NO search tools available this turn. Do NOT attempt any search. Reply with EXACTLY this, and nothing else:
+"Is ${bareName} a staff member (e.g. attorney, paralegal) or an applicant/client? I'll search the right way once you let me know."`
+    : '';
+
+  const selectedTools = bareName
+    ? { tools: {}, activeTools: [] }
+    : selectToolsForIntents(
+        classifyIntents(classifyText),
+        buildToolRegistry({ apiBaseUrl, jwtToken, enforcedSearchType, enforcedLabel, personSignal }),
+        { explicitStatus: enforcedSearchType !== 1 },
+      );
+
+  let result;
+  try {
+    result = streamText({
     model: openai('gpt-4o-mini'),
     system: `You are a smart assistant for Aeliuscase, a law firm case management platform.
 You help with two things only:
@@ -176,18 +338,62 @@ You help with two things only:
 ${guideSection}
 
 ━━━ HOW TO RESPOND ━━━
-• Case search (find/show/look up cases — NOT when the user is asking about parties, contacts, or documents for a case) → call searchCases immediately. Never skip this.
+• Case search (find/show/look up cases — NOT when the user is asking about parties, contacts, or documents for a case) → call searchCases immediately. Never skip this. (EXCEPTION: the ambiguous bare-name rule below.)
+• AMBIGUOUS BARE NAME — if the user asks for "cases for [Name]" / "[Name]'s cases" using a PERSON'S NAME, with NO role word (attorney/paralegal/coordinator) and NO "handled by"/"assigned to"/"staff member", AND the conversation has not already established whether that person is staff or a client:
+  → Do NOT call any tool yet. Reply with exactly: "Is [Name] a staff member (e.g. attorney, paralegal) or an applicant/client? I'll search the right way once you let me know."
+  → On the user's clarification, if the request was JUST the name (no other filters): staff/attorney/paralegal/coordinator/"handled by" → call getByStaff({ name: "[Name]" }); applicant/client/claimant → call searchCases({ searchText: "[Name]" }).
+  → On the user's clarification, if the request ALSO had other filters (type/venue/status/date/body part/etc.): call combinedSearch with those filters PLUS staffName: "[Name]" (if staff) or applicantName: "[Name]" (if applicant/client). Do NOT use getByStaff/searchCases in that case.
+  → This applies ONLY to a bare PERSON name. A case number (e.g. RP003613), a company/employer name, a status word (open/closed), or any other keyword → search normally with searchCases; do NOT ask.
+• When the user asks for multiple things in one message (e.g. "show open cases for Maria AND parties for EL00503"), call EACH relevant tool in sequence — do not skip any. Handle them one by one within the same response.
 • "What is AeliusCase", "how do I…", "what does X do", feature questions → answer from the User Guide excerpts above. Be helpful and specific. If the exact detail isn't in the excerpts, say you don't have that specific information from the guide.
 • Greetings → reply warmly in 1-2 sentences.
 • Questions completely unrelated to AeliusCase (world events, cooking, etc.) → reply: "I can only help with AeliusCase case searches and User Guide questions."
 • After a tool result → ONE short sentence only (e.g. "Found 12 open cases for Maria.").
   NEVER list case numbers, names, employers, or any case details in text — the UI renders them automatically.
   Do NOT repeat or describe what is already shown in the result cards.
+• If the user repeats a search (same or similar request), ALWAYS call the tool again — never say "I already showed that" or "you already asked that."
 • Zero results → one sentence: suggest a broader or alternative search term.
 • If the user asks about parties, contacts, or documents (e.g. "show me the parties", "who are the parties", "list parties", "show contacts") WITHOUT providing a case number (like RP00001) or a numeric case ID → do NOT call any tool. Reply with exactly: "Which case would you like to see parties for? Please provide a case number (e.g. RP00001) or case ID."
 • Party/contact/document requests WITH a specific case number or case ID present → call getCaseParties immediately.
   Examples: "show parties for RP00001", "who is on case 12345", "get contacts for RP00056".
   REQUIRED: a case number (e.g. RP00001) or numeric case ID MUST appear in the user's message. If absent → ask first, never call the tool.
+
+━━━ FILTER TOOLS (when user provides specific IDs or keywords) ━━━
+• "status id N" / "caseStatusId N" → call getByStatusId({ caseStatusId: N })
+• "sub-type id N" / "caseSubTypeId N" → call getBySubTypeId({ caseSubTypeId: N })
+• "sub-status id N" / "caseSubStatusId N" → call getBySubStatusId({ caseSubStatusId: N })
+• "sub-status2 id N" / "caseSubStatusId2 N" → call getBySubStatusId2({ caseSubStatusId2: N })
+• "venue id N" / "venue N" → call getByVenueId({ venueId: N })
+• "rush cases" / "on hold" / "special instruction [keyword]" → call getBySpecialInstruction({ specialInstructions: "keyword" })
+• "SOL from [date] to [date]" / "statute of limitations [year]" → call getBySolDate({ solFromDate, solToDate })
+  Dates must be ISO 8601 format (e.g. "2024-01-01"). Ask the user if dates are unclear.
+• "body part id [N]" / "body part [N,M]" → call getByBodyPartIds({ bodyPartIds: [N, M] })
+  Known IDs: 100=Head, 110=Brain, 120=Ear, 121=Ear(external), 124=Ear(internal), 130=Eye, 140=Face, 141=Jaw, 144=Mouth, 145=Teeth, 146=Nose, 148=Face(multiple), 149=Face(forehead).
+  If user says a body part NAME, map it to the ID above. If no match, ask for the numeric ID.
+• "cases opened in 2024" / "case date from [date] to [date]" / "cases created between X and Y" → call getByCaseDate({ fromDate, toDate })
+  Dates ISO 8601 (e.g. "2024-01-01"). A bare year "2024" → fromDate="2024-01-01", toDate="2024-12-31". This is the CASE date, NOT SOL.
+• "[type] cases" / "main type N" / "type id N" → call getByCaseTypeId({ caseTypeId: N }). Map the type NAME to its ID:
+  1=WCAB, 2=DUI, 3=Personal Injury, 4=WCAB Defense, 5=Class Action, 6=Civil, 7=Employment, 8=Immigration, 9=Social Security.
+  (This is the MAIN type — different from sub-type. If the user clearly means "sub-type", use getBySubTypeId instead.)
+• "last name starts with [letter]" / "last name initial [letter]" → call getByLastNameInitial({ lastNameInitial: "M" }) — one A–Z letter.
+• "cases for [Role] [Name]" / "cases handled by [Name]" / "[Name]'s cases" / "[Name]'s cases as [role]" → call getByStaff({ name: "...", jobRole?: "..." })
+  Pass the person's name. Pass jobRole with the EXACT case ROLE/SLOT the user named — one of: Attorney, Supervisor Attorney (a.k.a. "Sup Attorney"), Paralegal, Coordinator, Other Attorney, Other Staff, Hearing Rep. This returns ONLY the cases where the person holds that slot (e.g. "Raj's cases as paralegal"). Omit jobRole when no role is named → all their cases.
+  If the tool reports multiple matches, ask the user which person (a fuller name). If none, say so.
+For ALL filter tools: if the required ID or value is missing from the user's message, ask for it — never guess.
+
+━━━ COMBINED / MULTI-FILTER SEARCH ━━━
+• When the user gives TWO OR MORE filter criteria in ONE request (e.g. "Open WCAB cases for Attorney Raj in Venue 5", "Personal Injury cases opened in 2024 with last name D", "closed cases in venue 3 with a head injury") → call combinedSearch ONCE with ALL the criteria as parameters. Do NOT call the individual filter tools separately.
+  - Map type names to caseTypeId (1=WCAB,2=DUI,3=Personal Injury,4=WCAB Defense,5=Class Action,6=Civil,7=Employment,8=Immigration,9=Social Security).
+  - status: 2=Open, 3=Closed, 4=Sub-Out (the "open/closed/active" word).
+  - body part names → bodyPartIds using the IDs listed above.
+• PERSON NAME inside a combined search — decide which KIND of name it is, then pass the matching parameter (never both):
+  - STAFF member — a role word (attorney/paralegal/coordinator/legal secretary/legal assistant) OR "handled by"/"assigned to" → pass staffName. ALSO pass jobRole with the exact case ROLE/SLOT if the user named one (Attorney, Supervisor Attorney, Paralegal, Coordinator, Other Attorney, Other Staff, Hearing Rep) to filter to that slot — e.g. "open cases where Raj is the paralegal". combinedSearch resolves the name to an ID.
+  - APPLICANT/CLIENT — "applicant"/"client"/"claimant"/"injured worker", or the conversation already established the person is the client → pass applicantName.
+  - BARE ambiguous name (no role word, not stated as a client, not already established) → do NOT call combinedSearch yet; follow the AMBIGUOUS BARE NAME rule above (ask staff-or-client first), THEN call combinedSearch with staffName OR applicantName plus the other filters.
+• A SINGLE filter criterion PLUS a person's name (e.g. "WCAB cases for John Smith", "venue 5 cases handled by Maria") IS a combined search → call combinedSearch with that filter + the name (routed per the rule above).
+• A SINGLE filter criterion with NO status word and NO person name → use that filter's individual tool (not combinedSearch).
+• A single filter criterion TOGETHER WITH an open/closed/sub-out status (e.g. "Open WCAB cases", "closed cases in venue 5") → call combinedSearch with that filter + status (the single filter tools cannot filter status).
+• If combinedSearch reports multiple staff matches, relay the question — ask which person.
 
 Do NOT answer general knowledge questions about the world, technology trends, or anything outside AeliusCase.
 
@@ -218,130 +424,35 @@ the most specific searchText possible. Stack filters progressively:
            → searchType=2 (unchanged), searchText="Maria RP0036"
            → NEVER reset to just "RP0036" alone when a back-reference phrase is used.
 
+  Step 6 — User says "send me RP0036 cases" (NO back-reference phrase)
+           → TOPIC REPLACEMENT. Use only the new keyword.
+           → searchType=2 (still open, carried forward), searchText="RP0036"
+           → Do NOT combine or append "Maria" — "send me X cases" is a fresh request for X.
+
 Rules for searchText:
 - When the user ONLY changes the status filter (open/closed/sub-out/sub-d in/all),
   keep the EXACT same searchText from the last search — do not add or remove anything.
-- COMBINE the keyword from the last search with any NEW name/number/keyword the user adds.
 - ADDITIVE TRIGGER PHRASES — if the user message contains any of these, ALWAYS append
   the new keyword to the existing searchText, NEVER replace it:
   "based on above", "from the above", "from those results", "from what you showed",
   "filter from", "from those cases", "narrow down", "within those", "of those", "from above".
-- Topic replacement ONLY when the user starts a completely new search with NO back-reference
-  phrase (e.g. "actually find John Smith instead", "forget that, search RP9999").
+- Topic replacement — when the user provides a new standalone name/number/keyword WITHOUT
+  any additive trigger phrase (e.g. "send me RP0036 cases", "find John Smith", "search AE0099"),
+  use ONLY the new keyword as searchText. Do NOT carry forward the previous searchText.
 - For date hints: append the year or month as a keyword (e.g. "Maria 2024", "RP2292 Jan").
 - NEVER include status words ("open", "closed", "sub-out") in searchText — status is in searchType.
 - Keep searchText SHORT — name, case number, or keyword only.
 
 searchType values:
-- 1 = All Cases  2 = Open only  3 = Closed only  4 = Sub-Out only  ("Sub-d In" = Sub-Out = 4)`,
+- 1 = All Cases  2 = Open only  3 = Closed only  4 = Sub-Out only  ("Sub-d In" = Sub-Out = 4)${bareNameDirective}`,
     messages: modelMessages,
     stopWhen: stepCountIs(5),
-    tools: {
-      searchCases: tool({
-        description:
-          'Search for legal cases in the Aeliuscase system. Always call this for any find/show/lookup request.',
-        inputSchema: zodSchema(
-          z.object({
-            searchText: z
-              .string()
-              .describe(
-                'Accumulated search term combining prior keyword + new refinement. E.g. if last search was "Maria" and user now says "2024", use "Maria 2024". No status words.',
-              ),
-            searchType: z
-              .number()
-              .int()
-              .min(1)
-              .max(4)
-              .default(enforcedSearchType)
-              .describe(
-                `Status filter — server enforces ${enforcedSearchType} (${enforcedLabel}). Only change if the user explicitly switches status.`,
-              ),
-            page: z.number().int().min(1).default(1).describe('Page number (starts at 1)'),
-          }),
-        ),
-        execute: async (input): Promise<SearchToolOutput> => {
-          const { searchText, page } = input as {
-            searchText: string;
-            searchType: number;
-            page: number;
-          };
-
-          // Server always enforces the detected type — model cannot override it.
-          const searchType = enforcedSearchType;
-
-          try {
-            const result = await searchCasesPaginated({
-              apiBaseUrl,
-              jwtToken,
-              searchText,
-              searchType,
-              page: page || 1,
-            });
-
-            if (!result.success) {
-              return {
-                success: false,
-                error: result.error ?? 'Search failed',
-                cases: [],
-                totalRecords: 0,
-                totalPages: 0,
-                hasMorePages: false,
-                page: 1,
-                searchText,
-                searchType,
-              };
-            }
-
-            return {
-              success: true,
-              cases: result.cases,
-              totalRecords: result.totalRecords,
-              totalPages: result.totalPages,
-              hasMorePages: result.hasMorePages,
-              page: result.page,
-              searchText,
-              searchType,
-            };
-          } catch {
-            return {
-              success: false,
-              error: 'Could not connect to case database.',
-              cases: [],
-              totalRecords: 0,
-              totalPages: 0,
-              hasMorePages: false,
-              page: 1,
-              searchText,
-              searchType,
-            };
-          }
-        },
-      }),
-      getCaseParties: tool({
-        description:
-          'Fetch all parties (insurance carriers, applicants, employers, etc.) and their documents for a specific AeliusCase case. Call this when the user asks about parties, contacts, or documents for a specific case number or case ID.',
-        inputSchema: zodSchema(
-          z.object({
-            caseNumber: z
-              .string()
-              .optional()
-              .describe('Case number string, e.g. "RP00001". Prefer this over caseId when available.'),
-            caseId: z
-              .number()
-              .int()
-              .optional()
-              .describe('Numeric case ID. Use only when caseNumber is not known.'),
-          }).refine((d) => d.caseNumber !== undefined || d.caseId !== undefined, {
-            message: 'Provide caseNumber or caseId.',
-          }),
-        ),
-        execute: async (input): Promise<PartiesToolOutput> => {
-          const { caseNumber, caseId } = input as { caseNumber?: string; caseId?: number };
-          return fetchCaseParties({ apiBaseUrl, jwtToken, caseNumber, caseId });
-        },
-      }),
-    },
+    ...selectedTools,
   });
+  } catch (err) {
+    console.error('[/api/chat] streamText threw:', err);
+    return Response.json({ error: 'Chat failed', detail: String(err) }, { status: 500 });
+  }
 
   return result.toUIMessageStreamResponse();
 }

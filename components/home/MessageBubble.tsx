@@ -6,6 +6,7 @@ import type { CaseSearchItem, MainSearchType, SearchToolOutput } from '@/types/c
 import CaseResultList from './CaseResultList';
 import type { PartiesToolOutput } from '@/types/caseParties';
 import PartyResultCard from './PartyResultCard';
+import type { FilterToolOutput } from '@/types/caseFilters';
 
 interface ToolPart {
   type: string;
@@ -22,6 +23,22 @@ interface PartiesToolPart {
   input?: { caseNumber?: string; caseId?: number };
   output?: PartiesToolOutput;
 }
+
+interface FilterToolPart {
+  type: string;
+  toolCallId: string;
+  state: string;
+  input?: Record<string, unknown>;
+  output?: FilterToolOutput;
+}
+
+const FILTER_TOOL_TYPES = new Set([
+  'tool-getByStatusId', 'tool-getBySubTypeId', 'tool-getBySubStatusId',
+  'tool-getBySubStatusId2', 'tool-getByVenueId', 'tool-getBySpecialInstruction',
+  'tool-getBySolDate', 'tool-getByBodyPartIds',
+  'tool-getByCaseDate', 'tool-getByCaseTypeId', 'tool-getByLastNameInitial', 'tool-getByStaff',
+  'tool-combinedSearch',
+]);
 
 export type OnLoadMore = (
   messageId: string,
@@ -320,6 +337,49 @@ export default function MessageBubble({ message, onLoadMore }: MessageBubbleProp
                 <PartyResultCard
                   key={`${message.id}-pr${idx}`}
                   result={part.output}
+                />
+              );
+            }
+          }
+
+          // Filter tools (getByStatusId, getByVenueId, getBySolDate, etc.)
+          if (FILTER_TOOL_TYPES.has(rawPart.type)) {
+            const part = rawPart as unknown as FilterToolPart;
+
+            if (part.state === 'input-streaming' || part.state === 'input-available') {
+              return (
+                <div
+                  key={`${message.id}-fc${idx}`}
+                  className="flex items-center gap-2 text-xs py-1"
+                  style={{ color: '#6763AC' }}
+                >
+                  <svg className="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                  </svg>
+                  <span>Filtering cases&hellip;</span>
+                </div>
+              );
+            }
+
+            if (part.state === 'output-available' && part.output) {
+              const result = part.output;
+              if (!result.success) return null;
+              return (
+                <CaseResultList
+                  key={`${message.id}-fr${idx}`}
+                  msgId={message.id}
+                  toolCallId={part.toolCallId}
+                  cases={result.cases}
+                  totalRecords={result.totalRecords}
+                  totalPages={result.totalPages ?? 1}
+                  query={result.filterLabel}
+                  searchType={1 as MainSearchType}
+                  page={result.page}
+                  hasMorePages={result.hasMorePages}
+                  filterType={result.filterType}
+                  filterValue={result.filterValue}
+                  onLoadMore={onLoadMore}
                 />
               );
             }

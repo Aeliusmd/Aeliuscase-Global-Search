@@ -14,6 +14,8 @@ interface CaseResultListProps {
   searchType: MainSearchType;
   page: number;
   hasMorePages: boolean;
+  filterType?: string;
+  filterValue?: string;
   onLoadMore?: (
     messageId: string,
     toolCallId: string,
@@ -90,6 +92,8 @@ export default function CaseResultList({
   searchType,
   page: initialPage,
   hasMorePages: _initialHasMore,
+  filterType,
+  filterValue,
 }: CaseResultListProps) {
   const [currentPage, setCurrentPage] = useState(initialPage || 1);
   const [displayedCases, setDisplayedCases] = useState<CaseSearchItem[]>(initialCases);
@@ -111,11 +115,19 @@ export default function CaseResultList({
     if (isNavigating) return;
     setIsNavigating(true);
     try {
-      const url = new URL('/api/cases/search', window.location.origin);
-      url.searchParams.set('searchText', query);
-      url.searchParams.set('searchType', String(searchType));
-      url.searchParams.set('page', String(targetPage));
-      url.searchParams.set('pageSize', String(PAGE_SIZE));
+      let url: URL;
+      if (filterType && filterValue !== undefined) {
+        url = new URL('/api/cases/filter', window.location.origin);
+        url.searchParams.set('filterType', filterType);
+        url.searchParams.set('filterValue', filterValue);
+        url.searchParams.set('page', String(targetPage));
+      } else {
+        url = new URL('/api/cases/search', window.location.origin);
+        url.searchParams.set('searchText', query);
+        url.searchParams.set('searchType', String(searchType));
+        url.searchParams.set('page', String(targetPage));
+        url.searchParams.set('pageSize', String(PAGE_SIZE));
+      }
       const res = await fetch(url.toString());
       const data = (await res.json()) as PagedApiResponse<CaseSearchItem>;
       if (!res.ok || !data.succeeded) return;
