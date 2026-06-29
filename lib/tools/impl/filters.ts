@@ -9,7 +9,6 @@ import {
   fetchByVenueId,
   fetchBySpecialInstruction,
   fetchBySolDate,
-  fetchByBodyPartIds,
   fetchByCaseDate,
   fetchByCaseTypeId,
   fetchByLastNameInitial,
@@ -126,7 +125,11 @@ export function makeGetBySolDateTool(deps: FilterDeps) {
   });
 }
 
-export function makeGetByBodyPartIdsTool(deps: FilterDeps) {
+/** Shared message: the upstream body-part endpoint is non-functional (see below). */
+export const BODY_PART_UNAVAILABLE =
+  "Filtering by injured body part isn't available yet — the backend endpoint (GetCaseListByBodyPartIds) isn't filtering correctly (it returns either 0 or all cases regardless of the body part). It's been flagged to the backend team. In the meantime, try another filter — case type, status, venue, attorney, date, last name, or special instructions.";
+
+export function makeGetByBodyPartIdsTool(_deps: FilterDeps) {
   return tool({
     description: 'Get cases linked to specific injured body parts by numeric ID. Known IDs: 100=Head, 110=Brain, 120=Ear, 121=Ear(external), 124=Ear(internal), 130=Eye, 140=Face, 141=Jaw, 144=Mouth, 145=Teeth, 146=Nose. Call when user mentions a body part name or ID.',
     inputSchema: zodSchema(z.object({
@@ -134,8 +137,18 @@ export function makeGetByBodyPartIdsTool(deps: FilterDeps) {
       page: z.number().int().min(1).default(1),
     })),
     execute: async (input): Promise<FilterToolOutput> => {
-      const { bodyPartIds, page } = input as { bodyPartIds: number[]; page: number };
-      return fetchByBodyPartIds({ ...deps, bodyPartIds, page });
+      const { bodyPartIds } = input as { bodyPartIds: number[]; page: number };
+      // Upstream GetCaseListByBodyPartIds does NOT filter: our `bodyPartIds` param
+      // is ignored (returns 0) and the recognised `bodyParts` param returns ALL
+      // cases for any id (even 999/1). Rather than mislead, report unavailable.
+      return {
+        success: false,
+        filterType: 'bodyPartIds',
+        filterLabel: `Body parts [${bodyPartIds.join(', ')}]`,
+        filterValue: bodyPartIds.join(','),
+        cases: [], totalRecords: 0, totalPages: 0, hasMorePages: false, page: 1,
+        error: BODY_PART_UNAVAILABLE,
+      };
     },
   });
 }

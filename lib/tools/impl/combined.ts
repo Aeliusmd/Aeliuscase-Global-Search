@@ -4,6 +4,7 @@ import type { FilterToolOutput } from '@/types/caseFilters';
 import { fetchStaffSearch } from '@/lib/caseFilters';
 import { combinedSearch, type CombinedFilters } from '@/lib/combinedFilter';
 import { resolveRoleSlot, hearingRepUnsupportedMessage } from '@/lib/roleSlots';
+import { BODY_PART_UNAVAILABLE } from './filters';
 
 export interface CombinedDeps {
   apiBaseUrl: string;
@@ -15,6 +16,12 @@ export interface CombinedDeps {
    * be silently assumed to be staff.
    */
   personSignal: 'staff' | 'applicant' | 'none';
+  /**
+   * The person name extracted deterministically from the user's words. Takes
+   * precedence over whatever field the model used — the model tends to drop an
+   * applicant name or turn it into a last-name initial.
+   */
+  personName?: string | null;
 }
 
 /**
@@ -69,12 +76,21 @@ export function makeCombinedSearchTool(deps: CombinedDeps) {
       const arr = (v: unknown): number[] | undefined =>
         Array.isArray(v) && v.length > 0 ? (v as number[]) : undefined;
 
+      // Body-part filtering is non-functional upstream (returns 0 or all, never a
+      // real filter). Refuse rather than silently wipe / inflate a combined result.
+      if (arr(i.bodyPartIds)) {
+        return {
+          success: false, filterType: 'combined', filterLabel: 'Body part filter', filterValue: '',
+          cases: [], totalRecords: 0, totalPages: 0, hasMorePages: false, page: 1,
+          error: BODY_PART_UNAVAILABLE,
+        };
+      }
+
       const filters: CombinedFilters = {
         caseTypeId: num(i.caseTypeId),
         venueId: num(i.venueId),
         status: num(i.status),
         lastNameInitial: str(i.lastNameInitial),
-        bodyPartIds: arr(i.bodyPartIds),
         solFromDate: str(i.solFromDate),
         solToDate: str(i.solToDate),
         caseFromDate: str(i.caseFromDate),
@@ -92,10 +108,11 @@ export function makeCombinedSearchTool(deps: CombinedDeps) {
       });
 
       // ── Person routing (deterministic) ──────────────────────────────────────
-      // The model may put the name in either field; the user's WORDS decide what
-      // it actually is. This guarantees a bare name is never silently treated as
-      // staff — the cause of "Maria → which Maria?" skipping the staff/client ask.
-      const personName = staffName ?? applicantName;
+      // Prefer the name extracted from the user's WORDS (deps.personName) over
+      // whatever field the model used — the model drops applicant names or maps
+      // them to a last-name initial. The user's words also decide staff vs client,
+      // so a bare name is never silently assumed to be staff.
+      const personName = (deps.personName && deps.personName.trim()) || staffName || applicantName;
       if (personName) {
         if (deps.personSignal === 'none') {
           // No staff/client signal in the user's words → ASK first, search nothing.
@@ -107,6 +124,13 @@ export function makeCombinedSearchTool(deps: CombinedDeps) {
 
         if (deps.personSignal === 'applicant') {
           filters.applicantName = personName;
+          // The model often misroutes the applicant name to a last-name initial
+          // (e.g. "applicant Smith" → lastNameInitial "S"). Drop it when it's just
+          // this name's first letter so it doesn't over-narrow the result.
+          if (filters.lastNameInitial &&
+              filters.lastNameInitial.trim().charAt(0).toUpperCase() === personName.trim().charAt(0).toUpperCase()) {
+            filters.lastNameInitial = undefined;
+          }
         } else {
           // Staff — a named role here is the CASE SLOT to filter by (Attorney/
           // Paralegal/…), NOT an HR-title tie-break. Resolve it to a VERIFIED slot

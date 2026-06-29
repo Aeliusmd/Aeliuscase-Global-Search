@@ -45,10 +45,15 @@ const FILTER_INTENTS = new Set<IntentKey>([
 export function selectToolsForIntents(
   intents: IntentKey[],
   registry: Map<string, ToolEntry>,
-  opts: { explicitStatus?: boolean } = {},
+  opts: { explicitStatus?: boolean; hasPerson?: boolean } = {},
 ): SelectedTools {
   const filterCount = intents.filter((i) => FILTER_INTENTS.has(i)).length;
-  const forceCombined = filterCount >= 2 || (filterCount >= 1 && !!opts.explicitStatus);
+  // FORCE combinedSearch (hide single filter tools) when it's genuinely multi-
+  // criteria: 2+ filters, OR one filter plus a status word, OR one filter plus a
+  // PERSON (staff/applicant) — otherwise the model picks a single filter tool and
+  // silently drops the person's name.
+  const forceCombined = filterCount >= 2
+    || (filterCount >= 1 && (!!opts.explicitStatus || !!opts.hasPerson));
   const offerCombined = filterCount >= 1;
 
   let names: string[];

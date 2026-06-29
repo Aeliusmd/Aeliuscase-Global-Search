@@ -32,10 +32,12 @@ export interface RegistryDeps {
   enforcedLabel: string;
   /** Staff/applicant/none signal from the user's words — governs combinedSearch name routing. */
   personSignal?: 'staff' | 'applicant' | 'none';
+  /** Person name extracted from the user's words — routed deterministically by combinedSearch. */
+  personName?: string | null;
 }
 
 export function buildToolRegistry(deps: RegistryDeps): Map<string, ToolEntry> {
-  const { apiBaseUrl, jwtToken, enforcedSearchType, enforcedLabel, personSignal = 'none' } = deps;
+  const { apiBaseUrl, jwtToken, enforcedSearchType, enforcedLabel, personSignal = 'none', personName = null } = deps;
   const fd = { apiBaseUrl, jwtToken };
 
   return new Map<string, ToolEntry>([
@@ -96,7 +98,7 @@ export function buildToolRegistry(deps: RegistryDeps): Map<string, ToolEntry> {
       intentTags: ['filter_staff'],
     }],
     ['combinedSearch', {
-      definition: makeCombinedSearchTool({ ...fd, personSignal }),
+      definition: makeCombinedSearchTool({ ...fd, personSignal, personName }),
       intentTags: [],   // selected specially when 2+ filter intents are present
     }],
   ]);

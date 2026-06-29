@@ -38,7 +38,8 @@ function explicitStatusFromText(text: string): number {
   const t = text.toLowerCase();
   if (/\b(open|active|current|pending|not closed)\b/.test(t)) return 2;
   if (/\b(clos(e|ed|es|ing)?|resolv(e|ed)?|settl(e|ed)?|complet(e|ed)?|done|finish(ed)?)\b/.test(t)) return 3;
-  if (/\bsub[\s-]?out\b|\bsub[\s-]?d[\s-]?in\b|\bsubbed[\s-]?in\b|\bsub'd\s?in\b/.test(t)) return 4;
+  // Sub-Out (searchType 4) = "Sub-d Out" only. "Sub-d In" is NOT sub-out — don't map it here.
+  if (/\bsub(?:bed|['’-]?d)?[\s-]?out\b/.test(t)) return 4;
   return 0;
 }
 
@@ -89,6 +90,35 @@ function detectBarePersonName(text: string): string | null {
     if (words.some((w) => w.length < 2)) continue;                   // stray single letters
     if (words.every((w) => STOP.has(w.toLowerCase()))) continue;     // pronouns / keywords only
     return name;
+  }
+  return null;
+}
+
+/**
+ * Extract the PERSON NAME that follows a staff/applicant signal word, so we can
+ * route it deterministically (the model otherwise drops applicant names or maps
+ * them to a last-name initial). Returns the cleaned name or null.
+ * e.g. "WCAB cases for client Martinez" → "Martinez"; "handled by Maria" → "Maria".
+ */
+function extractPersonName(text: string): string | null {
+  if (!text) return null;
+  const NAME = String.raw`([A-Za-z][A-Za-z.'-]*(?:\s+[A-Za-z][A-Za-z.'-]*){0,2})`;
+  const patterns = [
+    new RegExp(String.raw`\b(?:client|applicant|claimant|injured\s+worker)\s+${NAME}`, 'i'),
+    new RegExp(String.raw`\b(?:handled\s+by|assigned\s+to)\s+${NAME}`, 'i'),
+    new RegExp(String.raw`\b(?:other\s+attorney|other\s+staff|sup\.?\s*attorney|supervis(?:or|ing)\s*attorney|supervisor|attorney|paralegal|coordinator|legal\s+secretary|legal\s+assistant|hearing\s+rep(?:resentative)?)\s+${NAME}`, 'i'),
+    new RegExp(String.raw`\b${NAME}'s\s+(?:open\s+|closed\s+|active\s+|sub[\s-]?out\s+|all\s+)?cases\b`, 'i'),
+  ];
+  const STOPCUT = new Set(['in', 'with', 'on', 'at', 'for', 'and', 'venue', 'open', 'closed', 'active', 'pending', 'sub', 'cases', 'case', 'that', 'who', 'the', 'a', 'an', 'last', 'name', 'starts', 'type', 'as', 'is', 'of', 'from', 'to', 'wcab', 'dui', 'civil', 'employment', 'immigration', 'injury', 'personal']);
+  const LEAD = new Set(['show', 'me', 'send', 'give', 'find', 'get', 'list', 'pull', 'please', 'can', 'you', 'the', 'my', 'a', 'an', 'i', 'want', 'need', 'for']);
+  for (const re of patterns) {
+    const m = text.match(re);
+    if (!m?.[1]) continue;
+    const words = m[1].trim().split(/\s+/);
+    while (words.length && LEAD.has(words[0].toLowerCase())) words.shift();
+    const out: string[] = [];
+    for (const w of words) { if (/\d/.test(w) || STOPCUT.has(w.toLowerCase())) break; out.push(w); }
+    if (out.length) return out.slice(0, 3).join(' ');
   }
   return null;
 }
@@ -283,6 +313,11 @@ export async function POST(req: Request) {
       : /\b(attorney|paralegal|coordinator|legal\s+secretary|legal\s+assistant|staff(\s+member)?|handled\s+by|assigned\s+to)\b/i.test(classifyText) ? 'staff'
         : 'none';
 
+  // The actual person name following that signal — passed to combinedSearch so the
+  // name is routed deterministically (model tends to drop applicant names or turn
+  // them into a last-name initial).
+  const personName = personSignal !== 'none' ? extractPersonName(classifyText) : null;
+
   let guideContext: string;
   let modelMessages: Awaited<ReturnType<typeof convertToModelMessages>>;
   try {
@@ -322,8 +357,8 @@ ${guideContext}
     ? { tools: {}, activeTools: [] }
     : selectToolsForIntents(
         classifyIntents(classifyText),
-        buildToolRegistry({ apiBaseUrl, jwtToken, enforcedSearchType, enforcedLabel, personSignal }),
-        { explicitStatus: enforcedSearchType !== 1 },
+        buildToolRegistry({ apiBaseUrl, jwtToken, enforcedSearchType, enforcedLabel, personSignal, personName }),
+        { explicitStatus: enforcedSearchType !== 1, hasPerson: personSignal !== 'none' },
       );
 
   let result;
@@ -413,7 +448,7 @@ the most specific searchText possible. Stack filters progressively:
   Step 3 — User says "cases in 2024"
            → searchType=2 (still open), searchText="Maria 2024"
 
-  Step 4 — User says "now show closed" / "filter only open" / "sub-d in cases"
+  Step 4 — User says "now show closed" / "filter only open" / "sub-out cases"
            → ONLY the searchType changes. searchText="Maria 2024" carries forward unchanged.
            → This is a STATUS-ONLY filter. Do NOT clear or change searchText.
 
@@ -430,7 +465,7 @@ the most specific searchText possible. Stack filters progressively:
            → Do NOT combine or append "Maria" — "send me X cases" is a fresh request for X.
 
 Rules for searchText:
-- When the user ONLY changes the status filter (open/closed/sub-out/sub-d in/all),
+- When the user ONLY changes the status filter (open/closed/sub-out/all),
   keep the EXACT same searchText from the last search — do not add or remove anything.
 - ADDITIVE TRIGGER PHRASES — if the user message contains any of these, ALWAYS append
   the new keyword to the existing searchText, NEVER replace it:
@@ -444,7 +479,7 @@ Rules for searchText:
 - Keep searchText SHORT — name, case number, or keyword only.
 
 searchType values:
-- 1 = All Cases  2 = Open only  3 = Closed only  4 = Sub-Out only  ("Sub-d In" = Sub-Out = 4)${bareNameDirective}`,
+- 1 = All Cases  2 = Open only  3 = Closed only  4 = Sub-Out only (status "Sub-d Out" — NOT "Sub-d In")${bareNameDirective}`,
     messages: modelMessages,
     stopWhen: stepCountIs(5),
     ...selectedTools,
