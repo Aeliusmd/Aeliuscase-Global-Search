@@ -15,6 +15,7 @@ export default defineConfig({
       // exact module so other '@/lib/*' imports still resolve via the '@'→src
       // alias below.
       '@/lib/caseSearch': path.resolve(__dirname, './lib/caseSearch.ts'),
+      '@/lib/dateRange': path.resolve(__dirname, './lib/dateRange.ts'),
       '@': path.resolve(__dirname, './src'),
     },
   },

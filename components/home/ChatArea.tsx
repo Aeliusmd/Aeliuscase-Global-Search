@@ -50,7 +50,18 @@ export default function ChatArea({
   const hasTitleRef = useRef(false);
 
   const [transport] = useState(
-    () => new DefaultChatTransport({ api: '/api/chat' }),
+    () =>
+      new DefaultChatTransport({
+        api: '/api/chat',
+        prepareSendMessagesRequest: ({ messages, body }) => ({
+          body: {
+            ...body,
+            messages,
+            clientNow: new Date().toISOString(),
+            clientTimeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+          },
+        }),
+      }),
   );
 
   const { messages, sendMessage, status, setMessages } = useChat({ transport });

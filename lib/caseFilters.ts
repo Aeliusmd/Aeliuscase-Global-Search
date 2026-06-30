@@ -3,6 +3,19 @@ import type { FilterToolOutput, NewCaseDTO, NestedCaseListData, StaffItem } from
 
 export const FILTER_PAGE_SIZE = 10;
 
+/** Body fields for GetCaseListByCaseDate — send both names for API compatibility. */
+export function caseDateRequestBody(
+  fromDate?: string,
+  toDate?: string,
+  subOutFilter = 'include',
+): Record<string, unknown> {
+  return {
+    ...(fromDate ? { caseFromDate: fromDate, fromDate } : {}),
+    ...(toDate ? { caseToDate: toDate, toDate } : {}),
+    subOutFilter,
+  };
+}
+
 interface CacheEntry { at: number; cases: CaseSearchItem[] }
 const CACHE_TTL_MS = 30_000;
 const CACHE_MAX = 8;
@@ -320,11 +333,7 @@ export async function fetchByCaseDate(opts: {
   return callFilterNested({
     apiBaseUrl: opts.apiBaseUrl, jwtToken: opts.jwtToken, page: opts.page ?? 1,
     endpoint: 'GetCaseListByCaseDate',
-    body: {
-      ...(fromDate ? { fromDate } : {}),
-      ...(toDate ? { toDate } : {}),
-      subOutFilter: subOutFilter ?? 'include',
-    },
+    body: caseDateRequestBody(fromDate, toDate, subOutFilter ?? 'include'),
     filterType: 'caseDate',
     filterLabel: `Case Date ${fromDate ?? ''}–${toDate ?? ''}`,
     filterValue: `${fromDate ?? ''}~${toDate ?? ''}`,

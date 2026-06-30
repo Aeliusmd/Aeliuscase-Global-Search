@@ -6,6 +6,8 @@ import { combinedSearch, type CombinedFilters } from '@/lib/combinedFilter';
 import { resolveRoleSlot, hearingRepUnsupportedMessage } from '@/lib/roleSlots';
 import { BODY_PART_UNAVAILABLE } from './filters';
 
+import type { DateRange } from '@/lib/dateRange';
+
 export interface CombinedDeps {
   apiBaseUrl: string;
   jwtToken: string;
@@ -32,6 +34,10 @@ export interface CombinedDeps {
    * Person fields are NOT gated here; they're governed by personSignal.
    */
   allowedFilterKeys?: Set<string>;
+  /** Server-computed date range — overrides model-supplied caseFromDate/caseToDate. */
+  resolvedDateRange?: DateRange | null;
+  /** Server-enforced open/closed filter — overrides model status when not All. */
+  enforcedSearchType?: number;
 }
 
 /**
@@ -103,15 +109,24 @@ export function makeCombinedSearchTool(deps: CombinedDeps) {
         };
       }
 
+      // Server-computed date range overrides the model's dates. It targets EITHER
+      // the SOL fields (expiry: "cases expiring next year") or the case-open fields
+      // ("cases opened last month"), decided by the parser via `kind`.
+      const dr = deps.resolvedDateRange;
+      const drSol = dr && dr.kind === 'sol' ? dr : null;
+      const drCase = dr && dr.kind !== 'sol' ? dr : null;
+
       const filters: CombinedFilters = {
         caseTypeId: allowed('caseTypeId') ? num(i.caseTypeId) : undefined,
         venueId: allowed('venueId') ? num(i.venueId) : undefined,
-        status: num(i.status),
+        status: deps.enforcedSearchType && deps.enforcedSearchType !== 1
+          ? deps.enforcedSearchType
+          : num(i.status),
         lastNameInitial: allowed('lastNameInitial') ? str(i.lastNameInitial) : undefined,
-        solFromDate: allowed('solFromDate') ? str(i.solFromDate) : undefined,
-        solToDate: allowed('solToDate') ? str(i.solToDate) : undefined,
-        caseFromDate: allowed('caseFromDate') ? str(i.caseFromDate) : undefined,
-        caseToDate: allowed('caseToDate') ? str(i.caseToDate) : undefined,
+        solFromDate: allowed('solFromDate') ? (drSol?.from ?? str(i.solFromDate)) : undefined,
+        solToDate: allowed('solToDate') ? (drSol?.to ?? str(i.solToDate)) : undefined,
+        caseFromDate: allowed('caseFromDate') ? (drCase?.from ?? str(i.caseFromDate)) : undefined,
+        caseToDate: allowed('caseToDate') ? (drCase?.to ?? str(i.caseToDate)) : undefined,
         specialInstructions: allowed('specialInstructions') ? str(i.specialInstructions) : undefined,
         caseSubTypeId: allowed('caseSubTypeId') ? num(i.caseSubTypeId) : undefined,
         caseSubStatusId: allowed('caseSubStatusId') ? num(i.caseSubStatusId) : undefined,

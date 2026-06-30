@@ -14,9 +14,13 @@ import {
   fetchByLastNameInitial,
 } from '@/lib/caseFilters';
 
+import type { DateRange } from '@/lib/dateRange';
+
 export interface FilterDeps {
   apiBaseUrl: string;
   jwtToken: string;
+  /** Server-computed date range from the user's words — overrides model dates. */
+  resolvedDateRange?: DateRange | null;
 }
 
 export function makeGetByStatusIdTool(deps: FilterDeps) {
@@ -115,12 +119,16 @@ export function makeGetBySolDateTool(deps: FilterDeps) {
     ),
     execute: async (input): Promise<FilterToolOutput> => {
       const { solFromDate, solToDate, page } = input as { solFromDate?: string; solToDate?: string; page: number };
-      if (!solFromDate && !solToDate) {
+      // A server-resolved SOL range (e.g. "expiring next year") overrides model dates.
+      const resolved = deps.resolvedDateRange?.kind === 'sol' ? deps.resolvedDateRange : null;
+      const from = resolved?.from ?? solFromDate;
+      const to = resolved?.to ?? solToDate;
+      if (!from && !to) {
         return { success: false, filterType: 'solDate', filterLabel: 'SOL Date', filterValue: '',
           cases: [], totalRecords: 0, totalPages: 0, hasMorePages: false, page: 1,
           error: 'Please provide at least one date (solFromDate or solToDate).' };
       }
-      return fetchBySolDate({ ...deps, solFromDate, solToDate, page });
+      return fetchBySolDate({ ...deps, solFromDate: from, solToDate: to, page });
     },
   });
 }
@@ -166,12 +174,18 @@ export function makeGetByCaseDateTool(deps: FilterDeps) {
       const { fromDate, toDate, subOutFilter, page } = input as {
         fromDate?: string; toDate?: string; subOutFilter?: string; page: number;
       };
-      if (!fromDate && !toDate) {
+      // Only a CASE-date resolved range overrides here; an SOL range must not be
+      // mistaken for a case-open date.
+      const resolved = deps.resolvedDateRange && deps.resolvedDateRange.kind !== 'sol'
+        ? deps.resolvedDateRange : null;
+      const from = resolved?.from ?? fromDate;
+      const to = resolved?.to ?? toDate;
+      if (!from && !to) {
         return { success: false, filterType: 'caseDate', filterLabel: 'Case Date', filterValue: '',
           cases: [], totalRecords: 0, totalPages: 0, hasMorePages: false, page: 1,
           error: 'Please provide at least one date (from or to).' };
       }
-      return fetchByCaseDate({ ...deps, fromDate, toDate, subOutFilter, page });
+      return fetchByCaseDate({ ...deps, fromDate: from, toDate: to, subOutFilter, page });
     },
   });
 }

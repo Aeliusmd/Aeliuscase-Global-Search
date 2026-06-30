@@ -25,6 +25,8 @@ export interface ToolEntry {
   intentTags: IntentKey[];
 }
 
+import type { DateRange } from '@/lib/dateRange';
+
 export interface RegistryDeps {
   apiBaseUrl: string;
   jwtToken: string;
@@ -36,11 +38,16 @@ export interface RegistryDeps {
   personName?: string | null;
   /** CombinedFilters keys the user's words license — blocks model-invented filters. */
   allowedFilterKeys?: Set<string>;
+  /** Server-computed case date range from the user's message. */
+  resolvedDateRange?: DateRange | null;
 }
 
 export function buildToolRegistry(deps: RegistryDeps): Map<string, ToolEntry> {
-  const { apiBaseUrl, jwtToken, enforcedSearchType, enforcedLabel, personSignal = 'none', personName = null, allowedFilterKeys } = deps;
-  const fd = { apiBaseUrl, jwtToken };
+  const {
+    apiBaseUrl, jwtToken, enforcedSearchType, enforcedLabel,
+    personSignal = 'none', personName = null, allowedFilterKeys, resolvedDateRange = null,
+  } = deps;
+  const fd = { apiBaseUrl, jwtToken, resolvedDateRange };
 
   return new Map<string, ToolEntry>([
     ['searchCases', {
@@ -100,7 +107,9 @@ export function buildToolRegistry(deps: RegistryDeps): Map<string, ToolEntry> {
       intentTags: ['filter_staff'],
     }],
     ['combinedSearch', {
-      definition: makeCombinedSearchTool({ ...fd, personSignal, personName, allowedFilterKeys }),
+      definition: makeCombinedSearchTool({
+        ...fd, personSignal, personName, allowedFilterKeys, resolvedDateRange, enforcedSearchType,
+      }),
       intentTags: [],   // selected specially when 2+ filter intents are present
     }],
   ]);

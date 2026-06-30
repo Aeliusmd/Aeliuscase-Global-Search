@@ -1,6 +1,6 @@
 import type { CaseSearchItem } from '@/types/case';
 import type { FilterToolOutput } from '@/types/caseFilters';
-import { FILTER_PAGE_SIZE, fetchAllCases, type FetchAllSpec } from '@/lib/caseFilters';
+import { FILTER_PAGE_SIZE, fetchAllCases, type FetchAllSpec, caseDateRequestBody } from '@/lib/caseFilters';
 import { filterCasesByType, searchCasesPaginated } from '@/lib/caseSearch';
 
 /**
@@ -86,7 +86,7 @@ function buildSpecs(f: CombinedFilters): { label: string; spec: FetchAllSpec }[]
   if (f.lastNameInitial)
     specs.push({ label: `Last name ${f.lastNameInitial.toUpperCase()}`, spec: { endpoint: 'GetCaseListByLastNameInitial', shape: 'nested', body: { lastNameInitial: f.lastNameInitial.trim().charAt(0).toUpperCase(), subOutFilter: sub } } });
   if (f.caseFromDate || f.caseToDate)
-    specs.push({ label: `Case date ${f.caseFromDate ?? ''}–${f.caseToDate ?? ''}`, spec: { endpoint: 'GetCaseListByCaseDate', shape: 'nested', body: { ...(f.caseFromDate ? { fromDate: f.caseFromDate } : {}), ...(f.caseToDate ? { toDate: f.caseToDate } : {}), subOutFilter: sub } } });
+    specs.push({ label: `Case date ${f.caseFromDate ?? ''}–${f.caseToDate ?? ''}`, spec: { endpoint: 'GetCaseListByCaseDate', shape: 'nested', body: caseDateRequestBody(f.caseFromDate, f.caseToDate, sub) } });
   if (has(f.venueId))
     specs.push({ label: `Venue ${f.venueId}`, spec: { endpoint: 'GetCaseListByCaseVenueId', shape: 'flat', body: { venueId: f.venueId } } });
   if (has(f.caseSubTypeId))

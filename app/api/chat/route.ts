@@ -5,6 +5,7 @@ import OpenAI from 'openai';
 import { classifyIntents, type IntentKey } from '@/lib/tools/intentRouter';
 import { buildToolRegistry } from '@/lib/tools/registry';
 import { selectToolsForIntents } from '@/lib/tools/selector';
+import { formatTodayContext, parseDateRange } from '@/lib/dateRange';
 
 export const maxDuration = 30;
 
@@ -298,9 +299,17 @@ export async function POST(req: Request) {
   }
 
   let messages: UIMessage[];
+  let clientNow: string | undefined;
+  let clientTimeZone: string | undefined;
   try {
-    const body = await req.json() as { messages: UIMessage[] };
+    const body = await req.json() as {
+      messages: UIMessage[];
+      clientNow?: string;
+      clientTimeZone?: string;
+    };
     messages = body.messages;
+    clientNow = body.clientNow;
+    clientTimeZone = body.clientTimeZone;
   } catch (err) {
     console.error('[/api/chat] req.json() failed:', err);
     return Response.json({ error: 'Invalid request body' }, { status: 400 });
@@ -393,12 +402,60 @@ ${guideContext}
   // otherwise wipe the result via intersection.
   const allowedFilterKeys = allowedCombinedKeys(intents);
 
+  const anchorDate = clientNow ? new Date(clientNow) : new Date();
+  const timeZone = clientTimeZone?.trim() || 'UTC';
+  const todayContext = formatTodayContext(
+    Number.isNaN(anchorDate.getTime()) ? new Date() : anchorDate,
+    timeZone,
+  );
+  const resolvedDateRange = parseDateRange(
+    classifyText,
+    Number.isNaN(anchorDate.getTime()) ? new Date() : anchorDate,
+    timeZone,
+  );
+  if (resolvedDateRange) {
+    if (resolvedDateRange.kind === 'sol') {
+      // SOL / expiry date range → statute-of-limitations fields + intent.
+      allowedFilterKeys.add('solFromDate');
+      allowedFilterKeys.add('solToDate');
+      if (!intents.includes('filter_sol')) intents.push('filter_sol');
+    } else {
+      allowedFilterKeys.add('caseFromDate');
+      allowedFilterKeys.add('caseToDate');
+      if (!intents.includes('filter_case_date')) intents.push('filter_case_date');
+    }
+  }
+
+  const dateContextSection = `
+TODAY (user device): ${todayContext.isoDate} (${todayContext.weekday})
+USER TIMEZONE: ${todayContext.timeZone}
+Use this as the anchor for "today", "yesterday", "last month", and "this month". Never guess the current date from memory.`;
+
+  const resolvedDateSection = resolvedDateRange
+    ? (resolvedDateRange.kind === 'sol'
+      ? `
+RESOLVED SOL DATE RANGE (server-computed — use these EXACT values, do not recalculate):
+  solFromDate: "${resolvedDateRange.from}"
+  solToDate:   "${resolvedDateRange.to}"
+  (${resolvedDateRange.label})
+This is a STATUTE OF LIMITATIONS / EXPIRY date question ("expiring", "SOL"). You MUST call combinedSearch with the exact solFromDate/solToDate above (NOT caseFromDate). Never answer from memory without calling a tool.`
+      : `
+RESOLVED DATE RANGE (server-computed — use these EXACT values, do not recalculate):
+  caseFromDate: "${resolvedDateRange.from}"
+  caseToDate:   "${resolvedDateRange.to}"
+  (${resolvedDateRange.label})
+When RESOLVED DATE RANGE is present, you MUST call a date filter tool — combinedSearch if status is open/closed/sub-out (searchType≠1), otherwise getByCaseDate. Pass the exact ISO dates above. Never answer date-filter questions from memory without calling a tool.`)
+    : '';
+
   const selectedTools = bareName
     ? { tools: {}, activeTools: [] }
     : selectToolsForIntents(
         intents,
-        buildToolRegistry({ apiBaseUrl, jwtToken, enforcedSearchType, enforcedLabel, personSignal, personName, allowedFilterKeys }),
-        { explicitStatus: enforcedSearchType !== 1, hasPerson: personSignal !== 'none' },
+        buildToolRegistry({
+          apiBaseUrl, jwtToken, enforcedSearchType, enforcedLabel,
+          personSignal, personName, allowedFilterKeys, resolvedDateRange,
+        }),
+        { explicitStatus: enforcedSearchType !== 1, hasPerson: personSignal !== 'none', hasResolvedDate: !!resolvedDateRange },
       );
 
   let result;
@@ -471,6 +528,8 @@ For ALL filter tools: if the required ID or value is missing from the user's mes
 • If combinedSearch reports multiple staff matches, relay the question — ask which person.
 
 Do NOT answer general knowledge questions about the world, technology trends, or anything outside AeliusCase.
+
+${dateContextSection}${resolvedDateSection}
 
 LAST SEARCH IN THIS SESSION: ${lastSearchContext}
 CURRENT ENFORCED FILTER (server-side): ${enforcedLabel} (searchType=${enforcedSearchType})
