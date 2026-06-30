@@ -22,6 +22,16 @@ export interface CombinedDeps {
    * applicant name or turn it into a last-name initial.
    */
   personName?: string | null;
+  /**
+   * The CombinedFilters keys the user's words actually license (derived from the
+   * fired intents). The model frequently invents structured filters it was never
+   * asked for — e.g. caseTypeId:1 / venueId:1 for "cases with Aditi as
+   * coordinator" — and a hallucinated "1" survives the >0 guard, then WIPES the
+   * result via set-intersection. We only honour a structured filter when its key
+   * is in this set. Undefined ⇒ permissive (honour all — backward compatible).
+   * Person fields are NOT gated here; they're governed by personSignal.
+   */
+  allowedFilterKeys?: Set<string>;
 }
 
 /**
@@ -76,9 +86,16 @@ export function makeCombinedSearchTool(deps: CombinedDeps) {
       const arr = (v: unknown): number[] | undefined =>
         Array.isArray(v) && v.length > 0 ? (v as number[]) : undefined;
 
+      // Only honour a structured filter the user actually mentioned (its intent
+      // fired). Blocks the model from inventing caseTypeId/venueId/etc. that then
+      // wipe the result via intersection. Undefined set ⇒ permissive.
+      const allow = deps.allowedFilterKeys;
+      const allowed = (key: string): boolean => !allow || allow.has(key);
+
       // Body-part filtering is non-functional upstream (returns 0 or all, never a
       // real filter). Refuse rather than silently wipe / inflate a combined result.
-      if (arr(i.bodyPartIds)) {
+      // Only when the user actually asked for a body part (else it's a hallucination).
+      if (allowed('bodyPartIds') && arr(i.bodyPartIds)) {
         return {
           success: false, filterType: 'combined', filterLabel: 'Body part filter', filterValue: '',
           cases: [], totalRecords: 0, totalPages: 0, hasMorePages: false, page: 1,
@@ -87,18 +104,18 @@ export function makeCombinedSearchTool(deps: CombinedDeps) {
       }
 
       const filters: CombinedFilters = {
-        caseTypeId: num(i.caseTypeId),
-        venueId: num(i.venueId),
+        caseTypeId: allowed('caseTypeId') ? num(i.caseTypeId) : undefined,
+        venueId: allowed('venueId') ? num(i.venueId) : undefined,
         status: num(i.status),
-        lastNameInitial: str(i.lastNameInitial),
-        solFromDate: str(i.solFromDate),
-        solToDate: str(i.solToDate),
-        caseFromDate: str(i.caseFromDate),
-        caseToDate: str(i.caseToDate),
-        specialInstructions: str(i.specialInstructions),
-        caseSubTypeId: num(i.caseSubTypeId),
-        caseSubStatusId: num(i.caseSubStatusId),
-        caseSubStatusId2: num(i.caseSubStatusId2),
+        lastNameInitial: allowed('lastNameInitial') ? str(i.lastNameInitial) : undefined,
+        solFromDate: allowed('solFromDate') ? str(i.solFromDate) : undefined,
+        solToDate: allowed('solToDate') ? str(i.solToDate) : undefined,
+        caseFromDate: allowed('caseFromDate') ? str(i.caseFromDate) : undefined,
+        caseToDate: allowed('caseToDate') ? str(i.caseToDate) : undefined,
+        specialInstructions: allowed('specialInstructions') ? str(i.specialInstructions) : undefined,
+        caseSubTypeId: allowed('caseSubTypeId') ? num(i.caseSubTypeId) : undefined,
+        caseSubStatusId: allowed('caseSubStatusId') ? num(i.caseSubStatusId) : undefined,
+        caseSubStatusId2: allowed('caseSubStatusId2') ? num(i.caseSubStatusId2) : undefined,
         subOutFilter: str(i.subOutFilter),
       };
 

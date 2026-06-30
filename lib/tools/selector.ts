@@ -58,9 +58,16 @@ export function selectToolsForIntents(
 
   let names: string[];
   if (forceCombined) {
+    // Drop the free-text searchCases here. When a structured/combined search is
+    // required (2+ filters, or a filter + status, or a filter + a person), the
+    // plain text search ignores EVERY structured filter and misleads — e.g.
+    // "cases with Aditi as coordinator" → searchCases("Aditi") hits 0 applicants,
+    // while combinedSearch resolves her staffId + Coordinator slot → real cases.
+    // Exposing both let the model pick non-deterministically (same prompt, two
+    // answers). Keep other non-filter tools (e.g. getCaseParties — different job).
     const nonFilter = [...new Set(
       intents.filter((i) => !FILTER_INTENTS.has(i)).flatMap((i) => INTENT_TOOLS[i] ?? []),
-    )];
+    )].filter((name) => name !== 'searchCases');
     names = ['combinedSearch', ...nonFilter];
   } else if (offerCombined) {
     names = [...new Set([...intents.flatMap((i) => INTENT_TOOLS[i] ?? []), 'combinedSearch'])];

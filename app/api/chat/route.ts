@@ -2,7 +2,7 @@ import { openai } from '@ai-sdk/openai';
 import { convertToModelMessages, stepCountIs, streamText } from 'ai';
 import type { UIMessage } from 'ai';
 import OpenAI from 'openai';
-import { classifyIntents } from '@/lib/tools/intentRouter';
+import { classifyIntents, type IntentKey } from '@/lib/tools/intentRouter';
 import { buildToolRegistry } from '@/lib/tools/registry';
 import { selectToolsForIntents } from '@/lib/tools/selector';
 
@@ -24,6 +24,35 @@ type ToolPart = {
   type: string;
   output?: { searchType?: number; searchText?: string; totalRecords?: number };
 };
+
+/**
+ * Which CombinedFilters fields the user's words actually license, derived from
+ * the intents that fired. The model frequently invents structured filters it was
+ * never asked for (e.g. caseTypeId:1 / venueId:1 for "cases with Aditi as
+ * coordinator") — and a hallucinated value like "1" survives the >0 guard, then
+ * WIPES the result via set-intersection. combinedSearch only honours a structured
+ * filter whose key is in this set. Person fields (staffName/applicantName/jobRole)
+ * are intentionally absent — they're governed by personSignal. `status` is absent
+ * too — it's handled via enforcedSearchType, not an intent.
+ */
+const INTENT_COMBINED_KEYS: Partial<Record<IntentKey, string[]>> = {
+  filter_case_type:   ['caseTypeId'],
+  filter_venue:       ['venueId'],
+  filter_sub_type:    ['caseSubTypeId'],
+  filter_sub_status:  ['caseSubStatusId'],
+  filter_sub_status2: ['caseSubStatusId2'],
+  filter_sol:         ['solFromDate', 'solToDate'],
+  filter_body_part:   ['bodyPartIds'],
+  filter_special:     ['specialInstructions'],
+  filter_case_date:   ['caseFromDate', 'caseToDate'],
+  filter_last_name:   ['lastNameInitial'],
+};
+
+function allowedCombinedKeys(intents: IntentKey[]): Set<string> {
+  const keys = new Set<string>();
+  for (const it of intents) for (const k of INTENT_COMBINED_KEYS[it] ?? []) keys.add(k);
+  return keys;
+}
 
 /** Pull the plain text out of a UIMessage (first text part). */
 function textOf(msg: UIMessage | undefined): string {
@@ -103,14 +132,19 @@ function detectBarePersonName(text: string): string | null {
 function extractPersonName(text: string): string | null {
   if (!text) return null;
   const NAME = String.raw`([A-Za-z][A-Za-z.'-]*(?:\s+[A-Za-z][A-Za-z.'-]*){0,2})`;
+  const ROLES = String.raw`other\s+attorney|other\s+staff|sup\.?\s*attorney|supervis(?:or|ing)\s*attorney|supervisor|attorney|paralegal|coordinator|legal\s+secretary|legal\s+assistant|hearing\s+rep(?:resentative)?`;
   const patterns = [
     new RegExp(String.raw`\b(?:client|applicant|claimant|injured\s+worker)\s+${NAME}`, 'i'),
     new RegExp(String.raw`\b(?:handled\s+by|assigned\s+to)\s+${NAME}`, 'i'),
-    new RegExp(String.raw`\b(?:other\s+attorney|other\s+staff|sup\.?\s*attorney|supervis(?:or|ing)\s*attorney|supervisor|attorney|paralegal|coordinator|legal\s+secretary|legal\s+assistant|hearing\s+rep(?:resentative)?)\s+${NAME}`, 'i'),
+    // "ROLE NAME" — role word precedes the name (e.g. "coordinator Aditi Mandal").
+    new RegExp(String.raw`\b(?:${ROLES})\s+${NAME}`, 'i'),
+    // "NAME as [the] ROLE" / "NAME work(s)/working as ROLE" — name precedes the
+    // role (e.g. "cases with Aditi Mandal as coordinator", "Raj works as paralegal").
+    new RegExp(String.raw`\b${NAME}\s+(?:works?\s+|working\s+)?as\s+(?:the\s+|a\s+)?(?:${ROLES})\b`, 'i'),
     new RegExp(String.raw`\b${NAME}'s\s+(?:open\s+|closed\s+|active\s+|sub[\s-]?out\s+|all\s+)?cases\b`, 'i'),
   ];
   const STOPCUT = new Set(['in', 'with', 'on', 'at', 'for', 'and', 'venue', 'open', 'closed', 'active', 'pending', 'sub', 'cases', 'case', 'that', 'who', 'the', 'a', 'an', 'last', 'name', 'starts', 'type', 'as', 'is', 'of', 'from', 'to', 'wcab', 'dui', 'civil', 'employment', 'immigration', 'injury', 'personal']);
-  const LEAD = new Set(['show', 'me', 'send', 'give', 'find', 'get', 'list', 'pull', 'please', 'can', 'you', 'the', 'my', 'a', 'an', 'i', 'want', 'need', 'for']);
+  const LEAD = new Set(['show', 'me', 'send', 'give', 'find', 'get', 'list', 'pull', 'please', 'can', 'you', 'the', 'my', 'a', 'an', 'i', 'want', 'need', 'for', 'with', 'cases', 'case', 'where', 'whose', 'who', 'that']);
   for (const re of patterns) {
     const m = text.match(re);
     if (!m?.[1]) continue;
@@ -353,11 +387,17 @@ ${guideContext}
 "Is ${bareName} a staff member (e.g. attorney, paralegal) or an applicant/client? I'll search the right way once you let me know."`
     : '';
 
+  const intents = classifyIntents(classifyText);
+  // Structured filters the user's words actually license — passed to combinedSearch
+  // so it ignores any filter the model invented (caseTypeId/venueId/…) that would
+  // otherwise wipe the result via intersection.
+  const allowedFilterKeys = allowedCombinedKeys(intents);
+
   const selectedTools = bareName
     ? { tools: {}, activeTools: [] }
     : selectToolsForIntents(
-        classifyIntents(classifyText),
-        buildToolRegistry({ apiBaseUrl, jwtToken, enforcedSearchType, enforcedLabel, personSignal, personName }),
+        intents,
+        buildToolRegistry({ apiBaseUrl, jwtToken, enforcedSearchType, enforcedLabel, personSignal, personName, allowedFilterKeys }),
         { explicitStatus: enforcedSearchType !== 1, hasPerson: personSignal !== 'none' },
       );
 
