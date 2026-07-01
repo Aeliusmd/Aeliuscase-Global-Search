@@ -175,6 +175,16 @@ function getClarificationPriorText(messages: UIMessage[]): string {
 }
 
 /**
+ * True when the assistant just asked "Which year should I check for expiring
+ * cases?". On that turn the user's reply is a bare year/range ("2027", "2027 to
+ * 2028"), so we re-inject the "expiring" context to route it back to the SOL date.
+ */
+function isSolYearAnswerTurn(messages: UIMessage[]): boolean {
+  const lastAssistant = [...messages].reverse().find((m) => m.role === 'assistant');
+  return /which year.*expiring cases/i.test(textOf(lastAssistant));
+}
+
+/**
  * Detect the intended searchType.
  *
  * Priority:
@@ -345,8 +355,14 @@ export async function POST(req: Request) {
 
   // Text used for INTENT classification. On a clarification turn, prepend the
   // prior request so venue/type/date intents resurface and combinedSearch is
-  // exposed for the routed name.
-  const classifyText = clarificationPrior ? `${clarificationPrior} ${lastUserText}` : lastUserText;
+  // exposed for the routed name. When answering the "which year?" question for an
+  // expiring/SOL search, wrap the bare year so it routes back to the SOL date.
+  const solYearAnswer = isSolYearAnswerTurn(messages);
+  const classifyText = clarificationPrior
+    ? `${clarificationPrior} ${lastUserText}`
+    : solYearAnswer && /\b(19|20)\d{2}\b/.test(lastUserText)
+      ? `cases expiring in ${lastUserText}`
+      : lastUserText;
 
   // Deterministic STAFF-vs-CLIENT signal from the user's own words (current turn
   // + any clarification answer). Governs combinedSearch name routing so a bare
@@ -426,6 +442,22 @@ ${guideContext}
     }
   }
 
+  // Expiry / SOL query with NO resolvable year or timeframe → ask which year
+  // instead of guessing or returning nothing. When a year/relative date IS given,
+  // parseDateRange yields a kind='sol' range above and this stays false.
+  const solNeedsYear =
+    /\bexpir(?:e|es|ed|ing|ation|y)?\b|\bstatute\s+of\s+lim|\bsol\b/i.test(lastUserText)
+    && !resolvedDateRange
+    && /\bcase|\bexpir/i.test(lastUserText)                              // a case search, not a feature Q
+    && !/\bhow\b|\bwhat\s+is\b|\bwhat\s+does\b|\bexplain\b/i.test(lastUserText);
+
+  const solYearDirective = solNeedsYear
+    ? `
+
+‼️ THIS TURN — MANDATORY: The user asked about cases EXPIRING (SOL date) but gave NO year or timeframe. You cannot search without one. Do NOT call any tool. Reply with EXACTLY:
+"Which year should I check for expiring cases? For example 2027, or a range like 2027–2028."`
+    : '';
+
   const dateContextSection = `
 TODAY (user device): ${todayContext.isoDate} (${todayContext.weekday})
 USER TIMEZONE: ${todayContext.timeZone}
@@ -447,7 +479,7 @@ RESOLVED DATE RANGE (server-computed — use these EXACT values, do not recalcul
 When RESOLVED DATE RANGE is present, you MUST call a date filter tool — combinedSearch if status is open/closed/sub-out (searchType≠1), otherwise getByCaseDate. Pass the exact ISO dates above. Never answer date-filter questions from memory without calling a tool.`)
     : '';
 
-  const selectedTools = bareName
+  const selectedTools = (bareName || solNeedsYear)
     ? { tools: {}, activeTools: [] }
     : selectToolsForIntents(
         intents,
@@ -578,7 +610,7 @@ Rules for searchText:
 - Keep searchText SHORT — name, case number, or keyword only.
 
 searchType values:
-- 1 = All Cases  2 = Open only  3 = Closed only  4 = Sub-Out only (status "Sub-d Out" — NOT "Sub-d In")${bareNameDirective}`,
+- 1 = All Cases  2 = Open only  3 = Closed only  4 = Sub-Out only (status "Sub-d Out" — NOT "Sub-d In")${bareNameDirective}${solYearDirective}`,
     messages: modelMessages,
     stopWhen: stepCountIs(5),
     ...selectedTools,

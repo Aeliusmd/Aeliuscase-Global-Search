@@ -257,6 +257,17 @@ export function parseDateRange(
     }
   }
 
+  // Year-to-year range: "2027 to 2028", "2027-2028", "2027 through 2028", "2027–2028".
+  // Must come before single-year extraction so "to 2028" connector doesn't steal only the 2nd year.
+  const yearRangeRe = /\b((?:19|20)\d{2})\s*(?:to|through|until|[-–])\s*((?:19|20)\d{2})\b/i.exec(t);
+  if (yearRangeRe) {
+    const y1 = Number(yearRangeRe[1]);
+    const y2 = Number(yearRangeRe[2]);
+    const fromY = Math.min(y1, y2);
+    const toY = Math.max(y1, y2);
+    return { from: `${fromY}-01-01`, to: `${toY}-12-31`, label: `${fromY}–${toY}`, kind };
+  }
+
   const yearInContext =
     /\bcases?\s+(?:open|closed|active|pending|sub[\s-]?out\s+)?(?:in|from|during|on)\s+(20\d{2}|19\d{2})\b/i.exec(t)
     ?? /\b(?:in|from|during|on)\s+(20\d{2}|19\d{2})\s+cases?\b/i.exec(t)
