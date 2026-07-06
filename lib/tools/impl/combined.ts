@@ -4,7 +4,6 @@ import type { FilterToolOutput } from '@/types/caseFilters';
 import { fetchStaffSearch } from '@/lib/caseFilters';
 import { combinedSearch, type CombinedFilters } from '@/lib/combinedFilter';
 import { resolveRoleSlot, hearingRepUnsupportedMessage } from '@/lib/roleSlots';
-import { BODY_PART_UNAVAILABLE } from './filters';
 
 import type { DateRange } from '@/lib/dateRange';
 
@@ -98,17 +97,6 @@ export function makeCombinedSearchTool(deps: CombinedDeps) {
       const allow = deps.allowedFilterKeys;
       const allowed = (key: string): boolean => !allow || allow.has(key);
 
-      // Body-part filtering is non-functional upstream (returns 0 or all, never a
-      // real filter). Refuse rather than silently wipe / inflate a combined result.
-      // Only when the user actually asked for a body part (else it's a hallucination).
-      if (allowed('bodyPartIds') && arr(i.bodyPartIds)) {
-        return {
-          success: false, filterType: 'combined', filterLabel: 'Body part filter', filterValue: '',
-          cases: [], totalRecords: 0, totalPages: 0, hasMorePages: false, page: 1,
-          error: BODY_PART_UNAVAILABLE,
-        };
-      }
-
       // Server-computed date range overrides the model's dates. It targets EITHER
       // the SOL fields (expiry: "cases expiring next year") or the case-open fields
       // ("cases opened last month"), decided by the parser via `kind`.
@@ -123,6 +111,7 @@ export function makeCombinedSearchTool(deps: CombinedDeps) {
           ? deps.enforcedSearchType
           : num(i.status),
         lastNameInitial: allowed('lastNameInitial') ? str(i.lastNameInitial) : undefined,
+        bodyPartIds: allowed('bodyPartIds') ? arr(i.bodyPartIds) : undefined,
         solFromDate: allowed('solFromDate') ? (drSol?.from ?? str(i.solFromDate)) : undefined,
         solToDate: allowed('solToDate') ? (drSol?.to ?? str(i.solToDate)) : undefined,
         caseFromDate: allowed('caseFromDate') ? (drCase?.from ?? str(i.caseFromDate)) : undefined,

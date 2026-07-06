@@ -22,6 +22,17 @@ const INTENT_TOOLS: Record<IntentKey, string[]> = {
 export interface SelectedTools {
   tools: Record<string, AiTool>;
   activeTools: string[];
+  /** True when combinedSearch was FORCED (multi-criteria) — the model must call it, not narrate. */
+  forcedCombined: boolean;
+  /**
+   * True whenever ANY concrete filter intent fired (forced or merely offered
+   * alongside combinedSearch) — gpt-4o-mini sometimes narrates ("I'll search
+   * for...") instead of calling the tool even for a single-filter query, so the
+   * caller should require SOME tool call (not necessarily combinedSearch) on the
+   * first step. False for pure conversational/case-search/parties turns, where a
+   * text-only reply (e.g. asking for a missing case number) is legitimate.
+   */
+  requireTool: boolean;
 }
 
 const FILTER_INTENTS = new Set<IntentKey>([
@@ -81,5 +92,5 @@ export function selectToolsForIntents(
     const entry = registry.get(name);
     if (entry) tools[name] = entry.definition;
   }
-  return { tools, activeTools: Object.keys(tools) };
+  return { tools, activeTools: Object.keys(tools), forcedCombined: forceCombined, requireTool: offerCombined };
 }

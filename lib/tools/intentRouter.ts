@@ -25,7 +25,13 @@ const RULES: [IntentKey, RegExp][] = [
   ['filter_sub_type',    /\bsub[\s-]?type\s*(id)?\b|\bcaseSubTypeId\b/i],
   ['filter_venue',       /\bvenue\s*(id)?\b|\bvenueId\b/i],
   ['filter_sol',         /\bsol\b|\bstatute\s+of\s+lim|\bexpir(?:e|es|ed|ing|ation|y)?\b/i],
-  ['filter_body_part',   /\bbody[\s-]?part(s)?\b|\bbodyPart(s)?\b/i],
+  ['filter_body_part', new RegExp(
+    String.raw`\bbody[\s-]?part(?:s)?\b|\bbodyParts?\b` +
+    String.raw`|\b(?:head|brain|ear|eye|face|jaw|mouth|teeth?|nose|scalp|skull|neck|shoulder|arm|elbow|wrist|hand|finger|thumb|back|spine|spinal|chest|rib|hip|thigh|knee|leg|ankle|foot|toes?|lumbar|cervical|thoracic|hernia|groin|tailbone|coccyx)\s+(?:injur\w*|cases?|pain\w*|claim\w*)\b` +
+    String.raw`|\binjur(?:y|ies|ed)\s+(?:to\s+(?:the\s+)?)?(?:head|brain|ear|eye|face|jaw|mouth|teeth?|nose|scalp|skull|neck|shoulder|arm|elbow|wrist|hand|finger|thumb|back|spine|spinal|chest|rib|hip|thigh|knee|leg|ankle|foot|toes?|lumbar|cervical|thoracic|hernia|groin|tailbone|coccyx)\b` +
+    String.raw`|\bheart\s+attack\b|\bcovid(?:-?19)?\b`,
+    'i',
+  )],
   ['filter_special',     /\bspecial\s+instruction|\brush\b|\bon[\s-]?hold\b/i],
   // Staff / role — a role word, or "handled by / assigned to". Also matches the
   // short clarification answers users give ("staff", "she is a paralegal", etc.).

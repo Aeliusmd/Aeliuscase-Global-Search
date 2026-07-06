@@ -6,6 +6,7 @@ import { classifyIntents, type IntentKey } from '@/lib/tools/intentRouter';
 import { buildToolRegistry } from '@/lib/tools/registry';
 import { selectToolsForIntents } from '@/lib/tools/selector';
 import { formatTodayContext, parseDateRange } from '@/lib/dateRange';
+import { BODY_PART_IDS_TEXT } from '@/lib/bodyParts';
 
 export const maxDuration = 30;
 
@@ -95,6 +96,11 @@ function detectBarePersonName(text: string): string | null {
     'our', 'your', 'above', 'open', 'closed', 'active', 'pending', 'rush', 'me',
     'client', 'applicant', 'staff', 'attorney', 'paralegal', 'coordinator', 'everyone',
     'recent', 'new', 'old', 'some', 'any', 'more', 'other', 'such',
+    // Relative-date words — "cases for the last 4 months" must NOT be read as a
+    // person named "last". Covers both counted ("last 4 months") and bare
+    // ("last month") phrasings, since a trailing digit breaks the name capture.
+    'last', 'next', 'past', 'previous', 'day', 'days', 'week', 'weeks',
+    'month', 'months', 'year', 'years',
   ]);
   // Leading filler verbs/pronouns to peel off the front of a capture, and
   // trailing connectors to trim from the end, so we keep just the name.
@@ -213,6 +219,35 @@ function detectSearchType(messages: UIMessage[]): number {
   }
 
   return 1;
+}
+
+/**
+ * Carry forward the structured filter keys from the most recent combinedSearch
+ * result so a follow-up that only ADDS a new criterion (e.g. "Is Raj Patel
+ * handling these cases as attorney?" after "open knee injury cases last year")
+ * doesn't silently drop the earlier filters. Without this, allowedFilterKeys is
+ * rebuilt from scratch each turn from THIS message's own intents — a pure
+ * follow-up naturally doesn't re-mention "knee" or "last year", so those keys
+ * would be absent from the allow-set and combinedSearch would zero them out
+ * even though the model correctly remembered and resent their values.
+ * Mirrors detectSearchType's carry-forward pattern above for status.
+ */
+function carryForwardFilterKeys(messages: UIMessage[]): Set<string> {
+  const keys = new Set<string>();
+  for (const msg of [...messages].reverse()) {
+    if (msg.role !== 'assistant') continue;
+    for (const part of (msg.parts ?? []) as { type: string; output?: { filterValue?: string } }[]) {
+      if (part.type !== 'tool-combinedSearch' || !part.output?.filterValue) continue;
+      try {
+        const prior = JSON.parse(part.output.filterValue) as Record<string, unknown>;
+        for (const k of Object.keys(prior)) keys.add(k);
+      } catch {
+        // malformed/empty filterValue — nothing to carry forward
+      }
+      return keys;
+    }
+  }
+  return keys;
 }
 
 /**
@@ -417,6 +452,7 @@ ${guideContext}
   // so it ignores any filter the model invented (caseTypeId/venueId/…) that would
   // otherwise wipe the result via intersection.
   const allowedFilterKeys = allowedCombinedKeys(intents);
+  for (const k of carryForwardFilterKeys(messages)) allowedFilterKeys.add(k);
 
   const anchorDate = clientNow ? new Date(clientNow) : new Date();
   const timeZone = clientTimeZone?.trim() || 'UTC';
@@ -476,11 +512,11 @@ RESOLVED DATE RANGE (server-computed — use these EXACT values, do not recalcul
   caseFromDate: "${resolvedDateRange.from}"
   caseToDate:   "${resolvedDateRange.to}"
   (${resolvedDateRange.label})
-When RESOLVED DATE RANGE is present, you MUST call a date filter tool — combinedSearch if status is open/closed/sub-out (searchType≠1), otherwise getByCaseDate. Pass the exact ISO dates above. Never answer date-filter questions from memory without calling a tool.`)
+You MUST call combinedSearch with the exact caseFromDate/caseToDate above (plus any other filter/status/person also mentioned). Pass the exact ISO dates above. Never answer date-filter questions from memory without calling a tool.`)
     : '';
 
   const selectedTools = (bareName || solNeedsYear)
-    ? { tools: {}, activeTools: [] }
+    ? { tools: {}, activeTools: [], forcedCombined: false, requireTool: false }
     : selectToolsForIntents(
         intents,
         buildToolRegistry({
@@ -532,8 +568,8 @@ ${guideSection}
 • "SOL from [date] to [date]" / "statute of limitations [year]" → call getBySolDate({ solFromDate, solToDate })
   Dates must be ISO 8601 format (e.g. "2024-01-01"). Ask the user if dates are unclear.
 • "body part id [N]" / "body part [N,M]" → call getByBodyPartIds({ bodyPartIds: [N, M] })
-  Known IDs: 100=Head, 110=Brain, 120=Ear, 121=Ear(external), 124=Ear(internal), 130=Eye, 140=Face, 141=Jaw, 144=Mouth, 145=Teeth, 146=Nose, 148=Face(multiple), 149=Face(forehead).
-  If user says a body part NAME, map it to the ID above. If no match, ask for the numeric ID.
+  Known IDs: ${BODY_PART_IDS_TEXT}.
+  ‼️ These IDs are THIS APP'S OWN numbering (1=Head, 2=Brain, 3=Ear...) — a small sequential range, 1 through 63 ONLY. This is NOT the same as the common workers'-comp body-part code convention you may know (100=Head, 110=Brain, etc.) — that convention is WRONG here and must never be used. If user says a body part NAME, map it ONLY to the ID table above. If no match, ask for the numeric ID.
 • "cases opened in 2024" / "case date from [date] to [date]" / "cases created between X and Y" → call getByCaseDate({ fromDate, toDate })
   Dates ISO 8601 (e.g. "2024-01-01"). A bare year "2024" → fromDate="2024-01-01", toDate="2024-12-31". This is the CASE date, NOT SOL.
 • "[type] cases" / "main type N" / "type id N" → call getByCaseTypeId({ caseTypeId: N }). Map the type NAME to its ID:
@@ -549,7 +585,7 @@ For ALL filter tools: if the required ID or value is missing from the user's mes
 • When the user gives TWO OR MORE filter criteria in ONE request (e.g. "Open WCAB cases for Attorney Raj in Venue 5", "Personal Injury cases opened in 2024 with last name D", "closed cases in venue 3 with a head injury") → call combinedSearch ONCE with ALL the criteria as parameters. Do NOT call the individual filter tools separately.
   - Map type names to caseTypeId (1=WCAB,2=DUI,3=Personal Injury,4=WCAB Defense,5=Class Action,6=Civil,7=Employment,8=Immigration,9=Social Security).
   - status: 2=Open, 3=Closed, 4=Sub-Out (the "open/closed/active" word).
-  - body part names → bodyPartIds using the IDs listed above.
+  - body part names → bodyPartIds using ONLY the 1-63 ID table listed above — NEVER the common 100/110/120-style workers'-comp codes.
 • PERSON NAME inside a combined search — decide which KIND of name it is, then pass the matching parameter (never both):
   - STAFF member — a role word (attorney/paralegal/coordinator/legal secretary/legal assistant) OR "handled by"/"assigned to" → pass staffName. ALSO pass jobRole with the exact case ROLE/SLOT if the user named one (Attorney, Supervisor Attorney, Paralegal, Coordinator, Other Attorney, Other Staff, Hearing Rep) to filter to that slot — e.g. "open cases where Raj is the paralegal". combinedSearch resolves the name to an ID.
   - APPLICANT/CLIENT — "applicant"/"client"/"claimant"/"injured worker", or the conversation already established the person is the client → pass applicantName.
@@ -613,7 +649,23 @@ searchType values:
 - 1 = All Cases  2 = Open only  3 = Closed only  4 = Sub-Out only (status "Sub-d Out" — NOT "Sub-d In")${bareNameDirective}${solYearDirective}`,
     messages: modelMessages,
     stopWhen: stepCountIs(5),
-    ...selectedTools,
+    tools: selectedTools.tools,
+    activeTools: selectedTools.activeTools,
+    // A concrete filter intent fired (forced-combined or merely offered) —
+    // gpt-4o-mini sometimes narrates ("I'll search for...") instead of calling
+    // the tool, so require a call on the first step only (forcing every step
+    // would block the model from ever replying with the final summary text
+    // after the tool result comes back). When combinedSearch was specifically
+    // FORCED, require that exact tool; otherwise require any of the offered
+    // tools (lets the model still choose between the single-filter tool and
+    // combinedSearch, e.g. when it detects a person's name).
+    ...(selectedTools.forcedCombined
+      ? { prepareStep: ({ stepNumber }: { stepNumber: number }) =>
+          stepNumber === 0 ? { toolChoice: { type: 'tool' as const, toolName: 'combinedSearch' } } : {} }
+      : selectedTools.requireTool
+      ? { prepareStep: ({ stepNumber }: { stepNumber: number }) =>
+          stepNumber === 0 ? { toolChoice: 'required' as const } : {} }
+      : {}),
   });
   } catch (err) {
     console.error('[/api/chat] streamText threw:', err);
