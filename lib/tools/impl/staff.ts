@@ -20,11 +20,11 @@ export interface StaffDeps {
 export function makeGetByStaffTool(deps: StaffDeps) {
   return tool({
     description:
-      'Get cases for a staff member, looked up by NAME, optionally filtered to a CASE ROLE/SLOT. Call when the user asks for cases by a person\'s name — e.g. "cases handled by Maria", "show John\'s cases", "Raj\'s cases as paralegal", "Angels Valero\'s attorney cases". Provide the name. Pass jobRole with the EXACT role the user named when they specify a slot: Attorney, Supervisor Attorney (a.k.a. "Sup Attorney"), Paralegal, Coordinator, Other Attorney, Other Staff, or Hearing Rep. This returns only cases where the person holds THAT role. Omit jobRole when no role is named (returns all their cases).',
+      'Get cases for a staff member, looked up by NAME, optionally filtered to a CASE ROLE/SLOT. Call when the user asks for cases by a person\'s name — e.g. "cases handled by Maria", "show John\'s cases", "Raj\'s cases as paralegal", "Angels Valero\'s attorney cases". Provide the name. Pass jobRole with the EXACT role the user named when they specify a slot: Attorney, Supervisor Attorney (a.k.a. "Sup Attorney"), Paralegal, Coordinator, Other Attorney, Other Staff, Assistant Attorney, Senior Associate, or Hearing Rep. This returns only cases where the person holds THAT role. Omit jobRole when no role is named (returns all their cases).',
     inputSchema: zodSchema(
       z.object({
         name: z.string().min(1).describe('The staff member\'s name or partial name (e.g. "Angels Valero", "Maria").'),
-        jobRole: z.string().optional().describe('Optional case role/slot the user named (Attorney, Supervisor Attorney, Paralegal, Coordinator, Other Attorney, Other Staff, Hearing Rep). Filters to cases where the person holds that slot.'),
+        jobRole: z.string().optional().describe('Optional case role/slot the user named (Attorney, Supervisor Attorney, Paralegal, Coordinator, Other Attorney, Other Staff, Assistant Attorney, Senior Associate, Hearing Rep). Filters to cases where the person holds that slot.'),
         page: z.number().int().min(1).default(1),
       }),
     ),

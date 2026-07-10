@@ -35,7 +35,7 @@ const RULES: [IntentKey, RegExp][] = [
   ['filter_special',     /\bspecial\s+instruction|\brush\b|\bon[\s-]?hold\b/i],
   // Staff / role — a role word, or "handled by / assigned to". Also matches the
   // short clarification answers users give ("staff", "she is a paralegal", etc.).
-  ['filter_staff',       /\b(attorney|paralegal|coordinator|legal\s+secretary|legal\s+assistant|staff(\s+member)?|handled\s+by|assigned\s+to)\b/i],
+  ['filter_staff',       /\b(attorney|paralegal|coordinator|legal\s+secretary|legal\s+assistant|senior\s+associate|hearing\s+rep(?:resentative)?|staff(\s+member)?|handled\s+by|assigned\s+to)\b/i],
   // Case (open) date — kept distinct from SOL (filter_sol) above.
   ['filter_case_date',   /\bcase\s*date\b|\b(opened|created|filed)\s+(in|on|between|from)\b/i],
   ['filter_case_date',   /\b(last|this)\s+month\b|\btoday\b|\byesterday\b/i],
