@@ -41,7 +41,7 @@ const MATCHERS: { re: RegExp; jobRole?: string; label: string; unsupported?: boo
   { re: /\bassistant\s*attorney\b/i,                                            jobRole: 'Assistant Attorney',  label: 'Assistant Attorney' },
   { re: /\bother\s*attorney\b/i,                                                jobRole: 'Other Attorney',      label: 'Other Attorney' },
   { re: /\bother\s*staff\b/i,                                                   jobRole: 'Other Staff',         label: 'Other Staff' },
-  { re: /\b(?:sup\.?\s*attorney|supervis(?:or|ing)\s*attorney|supervisor)\b/i,  jobRole: 'Supervisor Attorney', label: 'Supervisor Attorney' },
+  { re: /\b(?:sup\.?\s*attorney|supervis(?:or|ing|ed)\s*(?:attorney|by)?|supervisor)\b/i, jobRole: 'Supervisor Attorney', label: 'Supervisor Attorney' },
   { re: /\bsenior\s*associate\b/i,                                              jobRole: 'Senior Associate',    label: 'Senior Associate' },
   { re: /\bhearing\s*rep(?:resentative)?\b/i,                                   label: 'Hearing Rep', unsupported: true },
   { re: /\b(?:case\s*)?coordinator\b/i,                                         jobRole: 'Coordinator',         label: 'Coordinator' },

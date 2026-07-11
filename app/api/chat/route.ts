@@ -140,9 +140,17 @@ function extractPersonName(text: string): string | null {
   if (!text) return null;
   const NAME = String.raw`([A-Za-z][A-Za-z.'-]*(?:\s+[A-Za-z][A-Za-z.'-]*){0,2})`;
   const ROLES = String.raw`other\s+attorney|other\s+staff|sup\.?\s*attorney|supervis(?:or|ing)\s*attorney|supervisor|attorney|paralegal|coordinator|legal\s+secretary|legal\s+assistant|hearing\s+rep(?:resentative)?`;
+  // Action verbs that commonly sit BETWEEN a name and "as ROLE" in question forms
+  // ("Is X handling these cases as attorney") — they are not part of a name.
+  const VERB = String.raw`handl(?:e|es|ing)|manag(?:e|es|ing)|supervis(?:e|es|ing)|work(?:s|ing)?|doing|assigned|responsible|ha(?:ve|s)`;
   const patterns = [
     new RegExp(String.raw`\b(?:client|applicant|claimant|injured\s+worker)\s+${NAME}`, 'i'),
-    new RegExp(String.raw`\b(?:handled\s+by|assigned\s+to)\s+${NAME}`, 'i'),
+    new RegExp(String.raw`\b(?:handled\s+by|assigned\s+to|supervised\s+by)\s+${NAME}`, 'i'),
+    // Interrogative / verb form: "Is/Does/Are NAME handling/managing/… as ROLE" —
+    // the name follows the question verb and precedes the action verb. Placed BEFORE
+    // the greedy "NAME as ROLE" pattern (which would otherwise grab "handling these
+    // cases" as the "name"). e.g. "Is raj patel handling these cases as attorney".
+    new RegExp(String.raw`\b(?:is|does|are|did|was|were|do|will|has|have)\s+${NAME}\s+(?:${VERB}|the)\b`, 'i'),
     // "ROLE NAME" — role word precedes the name (e.g. "coordinator Aditi Mandal").
     new RegExp(String.raw`\b(?:${ROLES})\s+${NAME}`, 'i'),
     // "NAME as [the] ROLE" / "NAME work(s)/working as ROLE" — name precedes the
@@ -150,7 +158,9 @@ function extractPersonName(text: string): string | null {
     new RegExp(String.raw`\b${NAME}\s+(?:works?\s+|working\s+)?as\s+(?:the\s+|a\s+)?(?:${ROLES})\b`, 'i'),
     new RegExp(String.raw`\b${NAME}'s\s+(?:open\s+|closed\s+|active\s+|sub[\s-]?out\s+|all\s+)?cases\b`, 'i'),
   ];
-  const STOPCUT = new Set(['in', 'with', 'on', 'at', 'for', 'and', 'venue', 'open', 'closed', 'active', 'pending', 'sub', 'cases', 'case', 'that', 'who', 'the', 'a', 'an', 'last', 'name', 'starts', 'type', 'as', 'is', 'of', 'from', 'to', 'wcab', 'dui', 'civil', 'employment', 'immigration', 'injury', 'personal']);
+  const STOPCUT = new Set(['in', 'with', 'on', 'at', 'for', 'and', 'venue', 'open', 'closed', 'active', 'pending', 'sub', 'cases', 'case', 'that', 'who', 'the', 'a', 'an', 'last', 'name', 'starts', 'type', 'as', 'is', 'of', 'from', 'to', 'wcab', 'dui', 'civil', 'employment', 'immigration', 'injury', 'personal',
+    // verbs / pronouns a greedy pattern can wrongly pull into a name
+    'handle', 'handles', 'handling', 'handled', 'manage', 'manages', 'managing', 'work', 'works', 'working', 'doing', 'does', 'do', 'assigned', 'responsible', 'these', 'those', 'them', 'this', 'by']);
   const LEAD = new Set(['show', 'me', 'send', 'give', 'find', 'get', 'list', 'pull', 'please', 'can', 'you', 'the', 'my', 'a', 'an', 'i', 'want', 'need', 'for', 'with', 'cases', 'case', 'where', 'whose', 'who', 'that']);
   for (const re of patterns) {
     const m = text.match(re);
@@ -159,7 +169,9 @@ function extractPersonName(text: string): string | null {
     while (words.length && LEAD.has(words[0].toLowerCase())) words.shift();
     const out: string[] = [];
     for (const w of words) { if (/\d/.test(w) || STOPCUT.has(w.toLowerCase())) break; out.push(w); }
-    if (out.length) return out.slice(0, 3).join(' ');
+    // Strip a trailing possessive ('s) that the NAME char class can absorb
+    // ("Raj Patel's" → "Raj Patel").
+    if (out.length) return out.slice(0, 3).join(' ').replace(/'s$/i, '');
   }
   return null;
 }
@@ -404,7 +416,7 @@ export async function POST(req: Request) {
   // name is never silently assumed to be staff — the tool asks instead.
   const personSignal: 'staff' | 'applicant' | 'none' =
     /\b(applicant|claimant|injured\s+worker|client)\b/i.test(classifyText) ? 'applicant'
-      : /\b(attorney|paralegal|coordinator|legal\s+secretary|legal\s+assistant|staff(\s+member)?|handled\s+by|assigned\s+to)\b/i.test(classifyText) ? 'staff'
+      : /\b(attorney|paralegal|coordinator|legal\s+secretary|legal\s+assistant|senior\s+associate|hearing\s+rep(?:resentative)?|supervis(?:e|es|or|ed|ing)|staff(\s+member)?|handled\s+by|assigned\s+to|supervised\s+by)\b/i.test(classifyText) ? 'staff'
         : 'none';
 
   // The actual person name following that signal — passed to combinedSearch so the
@@ -539,7 +551,9 @@ ${guideSection}
 
 ━━━ HOW TO RESPOND ━━━
 • Case search (find/show/look up cases — NOT when the user is asking about parties, contacts, or documents for a case) → call searchCases immediately. Never skip this. (EXCEPTION: the ambiguous bare-name rule below.)
-• AMBIGUOUS BARE NAME — if the user asks for "cases for [Name]" / "[Name]'s cases" using a PERSON'S NAME, with NO role word (attorney/paralegal/coordinator) and NO "handled by"/"assigned to"/"staff member", AND the conversation has not already established whether that person is staff or a client:
+• CLIENT / APPLICANT NAMED EXPLICITLY — if the user says the person is a "client", "applicant", "claimant", or "injured worker" (e.g. "cases for client Martinez", "a client named Martinez", "applicant Serrato") → that is NOT ambiguous. Call searchCases({ searchText: "[Name]" }) directly (or combinedSearch with applicantName if other filters are present). Do NOT ask the staff-or-client question.
+• STAFF NAMED EXPLICITLY — if a role word (attorney/paralegal/coordinator/…) or "handled by"/"assigned to" is present → call getByStaff({ name: "[Name]", jobRole? }) directly (or combinedSearch with staffName). Do NOT ask.
+• AMBIGUOUS BARE NAME — ONLY when the user gives a bare PERSON'S NAME with NO client/applicant/claimant word AND NO role word AND NO "handled by"/"assigned to"/"staff member", AND it's not already established:
   → Do NOT call any tool yet. Reply with exactly: "Is [Name] a staff member (e.g. attorney, paralegal) or an applicant/client? I'll search the right way once you let me know."
   → On the user's clarification, if the request was JUST the name (no other filters): staff/attorney/paralegal/coordinator/"handled by" → call getByStaff({ name: "[Name]" }); applicant/client/claimant → call searchCases({ searchText: "[Name]" }).
   → On the user's clarification, if the request ALSO had other filters (type/venue/status/date/body part/etc.): call combinedSearch with those filters PLUS staffName: "[Name]" (if staff) or applicantName: "[Name]" (if applicant/client). Do NOT use getByStaff/searchCases in that case.
@@ -556,6 +570,7 @@ ${guideSection}
 • If the user asks about parties, contacts, or documents (e.g. "show me the parties", "who are the parties", "list parties", "show contacts") WITHOUT providing a case number (like RP00001) or a numeric case ID → do NOT call any tool. Reply with exactly: "Which case would you like to see parties for? Please provide a case number (e.g. RP00001) or case ID."
 • Party/contact/document requests WITH a specific case number or case ID present → call getCaseParties immediately.
   Examples: "show parties for RP00001", "who is on case 12345", "get contacts for RP00056".
+  The parties result also contains the case's VENUE, INSURANCE CARRIER, APPLICANT, DEFENDANT, ATTORNEY, and COORDINATOR — so "who is the insurance carrier for RP2476", "what's the venue on RP00001", "who is the applicant on [case]", "who is the attorney on RP2476" all → call getCaseParties for that case, then read the answer from the parties list. These are NOT off-topic and are NOT a combinedSearch — never call combinedSearch for a single-case party question.
   REQUIRED: a case number (e.g. RP00001) or numeric case ID MUST appear in the user's message. If absent → ask first, never call the tool.
 
 ━━━ FILTER TOOLS (when user provides specific IDs or keywords) ━━━
@@ -573,7 +588,8 @@ ${guideSection}
 • "cases opened in 2024" / "case date from [date] to [date]" / "cases created between X and Y" → call getByCaseDate({ fromDate, toDate })
   Dates ISO 8601 (e.g. "2024-01-01"). A bare year "2024" → fromDate="2024-01-01", toDate="2024-12-31". This is the CASE date, NOT SOL.
 • "[type] cases" / "main type N" / "type id N" → call getByCaseTypeId({ caseTypeId: N }). Map the type NAME to its ID:
-  1=WCAB, 2=DUI, 3=Personal Injury, 4=WCAB Defense, 5=Class Action, 6=Civil, 7=Employment, 8=Immigration, 9=Social Security.
+  1=WCAB (a.k.a. "Workers Comp" / "Workers Compensation"), 2=DUI, 3=Personal Injury (a.k.a. "PI"), 4=WCAB Defense, 5=Class Action, 6=Civil, 7=Employment, 8=Immigration, 9=Social Security.
+  ‼️ A case-TYPE name is a FILTER, never free text. "personal injury cases", "WCAB cases", "DUI cases", "immigration cases", etc. → ALWAYS getByCaseTypeId with the mapped ID (or combinedSearch if combined with other filters). NEVER call searchCases with the type name as searchText (that text-searches applicant names and returns nothing).
   (This is the MAIN type — different from sub-type. If the user clearly means "sub-type", use getBySubTypeId instead.)
 • "last name starts with [letter]" / "last name initial [letter]" → call getByLastNameInitial({ lastNameInitial: "M" }) — one A–Z letter.
 • "cases for [Role] [Name]" / "cases handled by [Name]" / "[Name]'s cases" / "[Name]'s cases as [role]" → call getByStaff({ name: "...", jobRole?: "..." })
