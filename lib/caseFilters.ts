@@ -16,53 +16,6 @@ export function caseDateRequestBody(
   };
 }
 
-interface CacheEntry { at: number; cases: CaseSearchItem[] }
-const CACHE_TTL_MS = 30_000;
-const CACHE_MAX = 8;
-const cache = new Map<string, CacheEntry>();
-
-function readCache(key: string): CaseSearchItem[] | null {
-  const hit = cache.get(key);
-  if (!hit) return null;
-  if (Date.now() - hit.at > CACHE_TTL_MS) { cache.delete(key); return null; }
-  return hit.cases;
-}
-
-function writeCache(key: string, cases: CaseSearchItem[]): void {
-  cache.set(key, { at: Date.now(), cases });
-  if (cache.size > CACHE_MAX) {
-    const oldest = cache.keys().next().value;
-    if (oldest !== undefined) cache.delete(oldest);
-  }
-}
-
-function mapDTO(dto: NewCaseDTO): CaseSearchItem {
-  return {
-    id: dto.id,
-    caseNumber: dto.caseNumber,
-    fileNumber: dto.fileNumber ?? '',
-    caseName: dto.caseName ?? dto.caseNumber,
-    caseTypeId: 0,
-    caseType: '',
-    caseStatusDescription: dto.caseStatusDescription ?? '',
-    caseAttorneyNickName: dto.caseAttorneyName ?? '',
-    caseCoordinatorNickName: '',
-    createdDateTime: dto.createdDateTime ?? '',
-    caseApplicant: dto.caseApplicant
-      ? {
-          firstName: dto.caseApplicant.firstName ?? '',
-          lastName: dto.caseApplicant.lastName ?? '',
-          fullName:
-            dto.caseApplicant.fullName ??
-            `${dto.caseApplicant.firstName ?? ''} ${dto.caseApplicant.lastName ?? ''}`.trim(),
-          dob: dto.caseApplicant.dob,
-          phone: dto.caseApplicant.phone,
-        }
-      : null,
-    caseEmployee: dto.caseEmployee ? { company: dto.caseEmployee.company ?? '' } : null,
-  };
-}
-
 /**
  * Mapper for the newer nested endpoints whose case rows carry richer fields
  * (caseType, caseTypeId, a ready-made displayNameForCaseSearch, attorney nick).
@@ -92,18 +45,6 @@ function mapNestedDTO(dto: NewCaseDTO): CaseSearchItem {
       : null,
     caseEmployee: dto.caseEmployee ? { company: dto.caseEmployee.company ?? '' } : null,
   };
-}
-
-interface CallOpts {
-  apiBaseUrl: string;
-  jwtToken: string;
-  endpoint: string;
-  body: Record<string, unknown>;
-  cacheKey: string;
-  filterType: string;
-  filterLabel: string;
-  filterValue: string;
-  page: number;
 }
 
 interface CallNestedOpts {
@@ -159,62 +100,23 @@ async function callFilterNested(opts: CallNestedOpts): Promise<FilterToolOutput>
   }
 }
 
-async function callFilter(opts: CallOpts): Promise<FilterToolOutput> {
-  const { apiBaseUrl, jwtToken, endpoint, body, cacheKey, filterType, filterLabel, filterValue, page } = opts;
-
-  const fail = (error: string): FilterToolOutput => ({
-    success: false, filterType, filterLabel, filterValue,
-    cases: [], totalRecords: 0, totalPages: 0, hasMorePages: false, page: 1, error,
-  });
-
-  let all = readCache(cacheKey);
-
-  if (!all) {
-    try {
-      const res = await fetch(`${apiBaseUrl}/api/Case/${endpoint}`, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${jwtToken}`,
-          'Content-Type': 'application/json',
-          Accept: 'application/json',
-        },
-        body: JSON.stringify(body),
-        cache: 'no-store',
-      });
-      if (!res.ok) return fail(`API error ${res.status}`);
-      const data = (await res.json()) as { succeeded?: boolean; message?: string; data?: NewCaseDTO[] };
-      if (!data.succeeded) return fail(data.message ?? 'Filter failed');
-      all = (data.data ?? []).map(mapDTO);
-      writeCache(cacheKey, all);
-    } catch (err) {
-      return fail(err instanceof Error ? err.message : 'Unexpected error');
-    }
-  }
-
-  const totalRecords = all.length;
-  const totalPages = totalRecords === 0 ? 0 : Math.ceil(totalRecords / FILTER_PAGE_SIZE);
-  const safePage = totalPages === 0 ? 1 : Math.min(Math.max(1, page), totalPages);
-  const start = (safePage - 1) * FILTER_PAGE_SIZE;
-
-  return {
-    success: true, filterType, filterLabel, filterValue,
-    cases: all.slice(start, start + FILTER_PAGE_SIZE),
-    totalRecords, totalPages,
-    hasMorePages: safePage < totalPages,
-    page: safePage,
-  };
-}
 
 // ── 8 public filter functions ──────────────────────────────────────────────
+
+// Phase 2 (2026-07-11): these 8 single-filter functions now route through the
+// combined endpoint (via fetchCombinedCases) instead of their old flat endpoints.
+// Rationale: the flat endpoints returned a poorer row (null applicant/employer/
+// case-name, no status label) and no server pagination (we fetched the FULL set
+// and sliced in memory). Combined returns the rich nested row + real pagination,
+// with VERIFIED count parity for every filter. Each keeps its own filterType/
+// filterValue so the /api/cases/filter pagination proxy re-dispatches correctly.
 
 export async function fetchByStatusId(opts: {
   apiBaseUrl: string; jwtToken: string; caseStatusId: number; page?: number;
 }): Promise<FilterToolOutput> {
-  return callFilter({
+  return fetchCombinedCases({
     apiBaseUrl: opts.apiBaseUrl, jwtToken: opts.jwtToken, page: opts.page ?? 1,
-    endpoint: 'GetCaseListByCaseStatusId',
     body: { caseStatusId: opts.caseStatusId },
-    cacheKey: `statusId:${opts.caseStatusId}`,
     filterType: 'caseStatusId',
     filterLabel: `Status ID ${opts.caseStatusId}`,
     filterValue: String(opts.caseStatusId),
@@ -224,11 +126,9 @@ export async function fetchByStatusId(opts: {
 export async function fetchBySubTypeId(opts: {
   apiBaseUrl: string; jwtToken: string; caseSubTypeId: number; page?: number;
 }): Promise<FilterToolOutput> {
-  return callFilter({
+  return fetchCombinedCases({
     apiBaseUrl: opts.apiBaseUrl, jwtToken: opts.jwtToken, page: opts.page ?? 1,
-    endpoint: 'GetCaseListByCaseSubTypeId',
     body: { caseSubTypeId: opts.caseSubTypeId },
-    cacheKey: `subTypeId:${opts.caseSubTypeId}`,
     filterType: 'caseSubTypeId',
     filterLabel: `Sub-Type ID ${opts.caseSubTypeId}`,
     filterValue: String(opts.caseSubTypeId),
@@ -238,11 +138,9 @@ export async function fetchBySubTypeId(opts: {
 export async function fetchBySubStatusId(opts: {
   apiBaseUrl: string; jwtToken: string; caseSubStatusId: number; page?: number;
 }): Promise<FilterToolOutput> {
-  return callFilter({
+  return fetchCombinedCases({
     apiBaseUrl: opts.apiBaseUrl, jwtToken: opts.jwtToken, page: opts.page ?? 1,
-    endpoint: 'GetCaseListByCaseSubStatusId',
     body: { caseSubStatusId: opts.caseSubStatusId },
-    cacheKey: `subStatusId:${opts.caseSubStatusId}`,
     filterType: 'caseSubStatusId',
     filterLabel: `Sub-Status ID ${opts.caseSubStatusId}`,
     filterValue: String(opts.caseSubStatusId),
@@ -252,11 +150,9 @@ export async function fetchBySubStatusId(opts: {
 export async function fetchBySubStatusId2(opts: {
   apiBaseUrl: string; jwtToken: string; caseSubStatusId2: number; page?: number;
 }): Promise<FilterToolOutput> {
-  return callFilter({
+  return fetchCombinedCases({
     apiBaseUrl: opts.apiBaseUrl, jwtToken: opts.jwtToken, page: opts.page ?? 1,
-    endpoint: 'GetCaseListByCaseSubStatusId2',
     body: { caseSubStatusId2: opts.caseSubStatusId2 },
-    cacheKey: `subStatusId2:${opts.caseSubStatusId2}`,
     filterType: 'caseSubStatusId2',
     filterLabel: `Sub-Status 2 ID ${opts.caseSubStatusId2}`,
     filterValue: String(opts.caseSubStatusId2),
@@ -266,11 +162,9 @@ export async function fetchBySubStatusId2(opts: {
 export async function fetchByVenueId(opts: {
   apiBaseUrl: string; jwtToken: string; venueId: number; page?: number;
 }): Promise<FilterToolOutput> {
-  return callFilter({
+  return fetchCombinedCases({
     apiBaseUrl: opts.apiBaseUrl, jwtToken: opts.jwtToken, page: opts.page ?? 1,
-    endpoint: 'GetCaseListByCaseVenueId',
     body: { venueId: opts.venueId },
-    cacheKey: `venueId:${opts.venueId}`,
     filterType: 'venueId',
     filterLabel: `Venue ID ${opts.venueId}`,
     filterValue: String(opts.venueId),
@@ -281,11 +175,9 @@ export async function fetchBySpecialInstruction(opts: {
   apiBaseUrl: string; jwtToken: string; specialInstructions: string; page?: number;
 }): Promise<FilterToolOutput> {
   const kw = opts.specialInstructions.trim();
-  return callFilter({
+  return fetchCombinedCases({
     apiBaseUrl: opts.apiBaseUrl, jwtToken: opts.jwtToken, page: opts.page ?? 1,
-    endpoint: 'GetCaseListBySpecialInstruction',
     body: { specialInstructions: kw },
-    cacheKey: `special:${kw.toLowerCase()}`,
     filterType: 'specialInstructions',
     filterLabel: `Special: "${kw}"`,
     filterValue: kw,
@@ -297,11 +189,9 @@ export async function fetchBySolDate(opts: {
   solFromDate?: string; solToDate?: string; page?: number;
 }): Promise<FilterToolOutput> {
   const { solFromDate, solToDate } = opts;
-  return callFilter({
+  return fetchCombinedCases({
     apiBaseUrl: opts.apiBaseUrl, jwtToken: opts.jwtToken, page: opts.page ?? 1,
-    endpoint: 'GetCaseListBySolDate',
     body: { ...(solFromDate ? { solFromDate } : {}), ...(solToDate ? { solToDate } : {}) },
-    cacheKey: `sol:${solFromDate ?? ''}:${solToDate ?? ''}`,
     filterType: 'solDate',
     filterLabel: `SOL ${solFromDate ?? ''}–${solToDate ?? ''}`,
     filterValue: `${solFromDate ?? ''}~${solToDate ?? ''}`,
@@ -312,11 +202,9 @@ export async function fetchByBodyPartIds(opts: {
   apiBaseUrl: string; jwtToken: string; bodyPartIds: number[]; page?: number;
 }): Promise<FilterToolOutput> {
   const sorted = [...opts.bodyPartIds].sort((a, b) => a - b);
-  return callFilter({
+  return fetchCombinedCases({
     apiBaseUrl: opts.apiBaseUrl, jwtToken: opts.jwtToken, page: opts.page ?? 1,
-    endpoint: 'GetCaseListByBodyPartIds',
     body: { bodyPartIds: sorted },
-    cacheKey: `bodyParts:${sorted.join(',')}`,
     filterType: 'bodyPartIds',
     filterLabel: `Body Parts [${sorted.join(', ')}]`,
     filterValue: sorted.join(','),
@@ -395,56 +283,31 @@ export async function fetchByStaffId(opts: {
 }
 
 /**
- * Spec describing one filter endpoint to fetch in FULL (for combined / AND
- * filtering by client-side intersection). `shape` selects the response parser:
- * 'flat' = older endpoints returning data[]; 'nested' = newer data.cases.
+ * Combined (AND) search via the single backend endpoint POST
+ * /api/Case/GetCaseListCombined. Every supplied field is AND-combined server-side
+ * and the response is the standard nested envelope (data.cases + real pagination),
+ * so we reuse callFilterNested + mapNestedDTO. `body` is the already-mapped request
+ * (built by combinedFilter.ts). Replaces the old client-side fetch-all + intersect.
  */
-export interface FetchAllSpec {
-  endpoint: string;
+export async function fetchCombinedCases(opts: {
+  apiBaseUrl: string; jwtToken: string;
   body: Record<string, unknown>;
-  shape: 'flat' | 'nested';
+  filterLabel: string; filterValue: string; page?: number;
+  // Single-filter tools reuse this endpoint but keep their OWN filterType so the
+  // pagination proxy route (/api/cases/filter) re-dispatches to the right handler
+  // on Next/Previous (a venue search must page as 'venueId', not 'combined').
+  filterType?: string;
+}): Promise<FilterToolOutput> {
+  return callFilterNested({
+    apiBaseUrl: opts.apiBaseUrl, jwtToken: opts.jwtToken, page: opts.page ?? 1,
+    endpoint: 'GetCaseListCombined',
+    body: opts.body,
+    filterType: opts.filterType ?? 'combined',
+    filterLabel: opts.filterLabel,
+    filterValue: opts.filterValue,
+  });
 }
 
-/**
- * Fetch the COMPLETE matching set for one filter (no pagination), mapped to
- * CaseSearchItem[]. Nested endpoints are asked for a very large pageSize so the
- * server returns everything in one call (verified: pageSize=100000 → full set).
- */
-export async function fetchAllCases(
-  deps: { apiBaseUrl: string; jwtToken: string },
-  spec: FetchAllSpec,
-): Promise<{ success: boolean; cases: CaseSearchItem[]; error?: string }> {
-  try {
-    const body = spec.shape === 'nested'
-      ? { ...spec.body, page: 1, pageSize: 100000 }
-      : spec.body;
-    const res = await fetch(`${deps.apiBaseUrl}/api/Case/${spec.endpoint}`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${deps.jwtToken}`,
-        'Content-Type': 'application/json',
-        Accept: 'application/json',
-      },
-      body: JSON.stringify(body),
-      cache: 'no-store',
-    });
-    if (!res.ok) return { success: false, cases: [], error: `API error ${res.status}` };
-    const json = (await res.json()) as {
-      succeeded?: boolean; message?: string;
-      data?: NewCaseDTO[] | NestedCaseListData;
-    };
-    if (!json.succeeded) return { success: false, cases: [], error: json.message ?? 'Filter failed' };
-
-    if (spec.shape === 'nested') {
-      const rows = (json.data as NestedCaseListData)?.cases ?? [];
-      return { success: true, cases: rows.map(mapNestedDTO) };
-    }
-    const rows = (json.data as NewCaseDTO[]) ?? [];
-    return { success: true, cases: rows.map(mapDTO) };
-  } catch (err) {
-    return { success: false, cases: [], error: err instanceof Error ? err.message : 'Unexpected error' };
-  }
-}
 
 /**
  * Resolve a person by name. Returns the matching staff list (one row per
