@@ -43,6 +43,37 @@ async function resolveCaseId(
   }
 }
 
+/**
+ * Resolve a human case number to the numeric venueId of that case, via the
+ * combined endpoint (whose rows carry venueId). Used to answer anaphoric
+ * "how many cases are in THAT venue?" — the venue of the case the user was just
+ * viewing — without asking them to name the venue.
+ */
+export async function resolveCaseVenueId(
+  apiBaseUrl: string, jwtToken: string, caseNumber: string,
+): Promise<number | null> {
+  try {
+    const res = await fetch(`${apiBaseUrl}/api/Case/GetCaseListCombined`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${jwtToken}`, 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify({ searchText: caseNumber.trim(), page: 1, pageSize: 5 }),
+      cache: 'no-store',
+    });
+    if (!res.ok) return null;
+    const json = (await res.json()) as { data?: { cases?: { caseNumber?: string; fileNumber?: string; venueId?: number }[] } };
+    const cases = json?.data?.cases ?? [];
+    if (cases.length === 0) return null;
+    const want = caseNumber.trim().toLowerCase();
+    const exact = cases.find(
+      (c) => c.caseNumber?.toLowerCase() === want || c.fileNumber?.toLowerCase() === want,
+    );
+    const v = (exact ?? cases[0]).venueId;
+    return typeof v === 'number' && v > 0 ? v : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function fetchCaseParties(
   opts: FetchCasePartiesOpts,
 ): Promise<PartiesToolOutput> {

@@ -25,6 +25,20 @@ export interface FilterDeps {
   resolvedDateRange?: DateRange | null;
 }
 
+/**
+ * A friendly "I need the actual value" result. The model sometimes calls a filter
+ * tool with a garbage 0 / empty id — e.g. an anaphoric "cases in that venue" with
+ * no number. Querying id 0 returns a misleading "0 cases"; instead we ask the user
+ * to name the value so they get a clarification, not a wrong empty result.
+ */
+function needValue(what: string, example: string): FilterToolOutput {
+  return {
+    success: false, filterType: 'combined', filterLabel: `${what} (not specified)`, filterValue: '',
+    cases: [], totalRecords: 0, totalPages: 0, hasMorePages: false, page: 1,
+    error: `Which ${what} would you like to filter by? Please give ${example}.`,
+  };
+}
+
 export function makeGetByStatusIdTool(deps: FilterDeps) {
   return tool({
     description: 'Get cases matching a specific case status ID. Call when user says "status id N" or "caseStatusId N".',
@@ -34,6 +48,7 @@ export function makeGetByStatusIdTool(deps: FilterDeps) {
     })),
     execute: async (input): Promise<FilterToolOutput> => {
       const { caseStatusId, page } = input as { caseStatusId: number; page: number };
+      if (!(caseStatusId > 0)) return needValue('case status', 'a status ID');
       return fetchByStatusId({ ...deps, caseStatusId, page });
     },
   });
@@ -48,6 +63,7 @@ export function makeGetBySubTypeIdTool(deps: FilterDeps) {
     })),
     execute: async (input): Promise<FilterToolOutput> => {
       const { caseSubTypeId, page } = input as { caseSubTypeId: number; page: number };
+      if (!(caseSubTypeId > 0)) return needValue('case sub-type', 'a sub-type ID');
       return fetchBySubTypeId({ ...deps, caseSubTypeId, page });
     },
   });
@@ -62,6 +78,7 @@ export function makeGetBySubStatusIdTool(deps: FilterDeps) {
     })),
     execute: async (input): Promise<FilterToolOutput> => {
       const { caseSubStatusId, page } = input as { caseSubStatusId: number; page: number };
+      if (!(caseSubStatusId > 0)) return needValue('case sub-status', 'a sub-status ID');
       return fetchBySubStatusId({ ...deps, caseSubStatusId, page });
     },
   });
@@ -76,6 +93,7 @@ export function makeGetBySubStatusId2Tool(deps: FilterDeps) {
     })),
     execute: async (input): Promise<FilterToolOutput> => {
       const { caseSubStatusId2, page } = input as { caseSubStatusId2: number; page: number };
+      if (!(caseSubStatusId2 > 0)) return needValue('case sub-status 2', 'a sub-status 2 ID');
       return fetchBySubStatusId2({ ...deps, caseSubStatusId2, page });
     },
   });
@@ -90,6 +108,7 @@ export function makeGetByVenueIdTool(deps: FilterDeps) {
     })),
     execute: async (input): Promise<FilterToolOutput> => {
       const { venueId, page } = input as { venueId: number; page: number };
+      if (!(venueId > 0)) return needValue('venue', 'a venue ID or number (e.g. "venue 5")');
       return fetchByVenueId({ ...deps, venueId, page });
     },
   });
@@ -188,6 +207,7 @@ export function makeGetByCaseTypeIdTool(deps: FilterDeps) {
     })),
     execute: async (input): Promise<FilterToolOutput> => {
       const { caseTypeId, subOutFilter, page } = input as { caseTypeId: number; subOutFilter?: string; page: number };
+      if (!(caseTypeId > 0)) return needValue('case type', 'a case type (e.g. WCAB, Personal Injury) or type ID');
       return fetchByCaseTypeId({ ...deps, caseTypeId, subOutFilter, page });
     },
   });

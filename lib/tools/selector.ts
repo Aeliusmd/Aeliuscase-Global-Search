@@ -56,17 +56,20 @@ const FILTER_INTENTS = new Set<IntentKey>([
 export function selectToolsForIntents(
   intents: IntentKey[],
   registry: Map<string, ToolEntry>,
-  opts: { explicitStatus?: boolean; hasPerson?: boolean; hasResolvedDate?: boolean } = {},
+  opts: { explicitStatus?: boolean; hasPerson?: boolean; hasResolvedDate?: boolean; forceContinuation?: boolean } = {},
 ): SelectedTools {
   const filterCount = intents.filter((i) => FILTER_INTENTS.has(i)).length;
   // FORCE combinedSearch (hide single filter tools) when it's genuinely multi-
   // criteria: 2+ filters, OR one filter plus a status word, OR one filter plus a
   // PERSON (staff/applicant), OR a server-resolved date range (so the model can't
-  // pick the wrong date tool or drop the exact dates) — otherwise the model picks
-  // a single filter tool and silently drops a criterion.
+  // pick the wrong date tool or drop the exact dates), OR a REFINEMENT of a prior
+  // search that carried filters forward (even with 0 new filter intents — e.g.
+  // "closed ones instead" keeps the prior type) — otherwise the model picks a
+  // single filter tool and silently drops a criterion.
   const forceCombined = filterCount >= 2
-    || (filterCount >= 1 && (!!opts.explicitStatus || !!opts.hasPerson || !!opts.hasResolvedDate));
-  const offerCombined = filterCount >= 1;
+    || (filterCount >= 1 && (!!opts.explicitStatus || !!opts.hasPerson || !!opts.hasResolvedDate))
+    || !!opts.forceContinuation;
+  const offerCombined = filterCount >= 1 || !!opts.forceContinuation;
 
   let names: string[];
   if (forceCombined) {

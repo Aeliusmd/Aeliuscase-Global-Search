@@ -4,9 +4,10 @@ import type { UIMessage } from 'ai';
 import OpenAI from 'openai';
 import { classifyIntents, type IntentKey } from '@/lib/tools/intentRouter';
 import { buildToolRegistry } from '@/lib/tools/registry';
-import { selectToolsForIntents } from '@/lib/tools/selector';
+import { detectDomains, selectToolsForDomains } from '@/lib/domains';
 import { formatTodayContext, parseDateRange } from '@/lib/dateRange';
 import { BODY_PART_IDS_TEXT } from '@/lib/bodyParts';
+import { resolveCaseVenueId } from '@/lib/caseParties';
 
 export const maxDuration = 30;
 
@@ -54,6 +55,93 @@ function allowedCombinedKeys(intents: IntentKey[]): Set<string> {
   const keys = new Set<string>();
   for (const it of intents) for (const k of INTENT_COMBINED_KEYS[it] ?? []) keys.add(k);
   return keys;
+}
+
+/**
+ * Parse a single-filter tool's scalar `filterValue` (see lib/caseFilters.ts) back
+ * into the CombinedFilters field(s) it represents, so a follow-up can carry that
+ * filter forward. `status` (caseStatusId) is intentionally omitted — status has
+ * its own carry-forward path (enforcedSearchType).
+ */
+const FILTER_VALUE_PARSERS: Record<string, (v: string) => Record<string, unknown>> = {
+  venueId: (v) => ({ venueId: Number(v) }),
+  caseTypeId: (v) => ({ caseTypeId: Number(v) }),
+  caseSubTypeId: (v) => ({ caseSubTypeId: Number(v) }),
+  caseSubStatusId: (v) => ({ caseSubStatusId: Number(v) }),
+  caseSubStatusId2: (v) => ({ caseSubStatusId2: Number(v) }),
+  specialInstructions: (v) => ({ specialInstructions: v }),
+  lastNameInitial: (v) => ({ lastNameInitial: v }),
+  bodyPartIds: (v) => ({ bodyPartIds: v.split(',').map((x) => Number(x.trim())).filter((n) => n > 0) }),
+  solDate: (v) => { const [f, t] = v.split('~'); return { ...(f ? { solFromDate: f } : {}), ...(t ? { solToDate: t } : {}) }; },
+  caseDate: (v) => { const [f, t] = v.split('~'); return { ...(f ? { caseFromDate: f } : {}), ...(t ? { caseToDate: t } : {}) }; },
+};
+
+/** Anaphoric / additive wording that marks a message as REFINING the prior search. */
+function isRefinement(text: string): boolean {
+  return /\b(those|these|them|the\s+ones|of\s+the(?:se|m)\b|from\s+(?:the\s+)?above|from\s+those|from\s+these|which\s+of|narrow(?:\s+down)?|within\s+(?:those|these)|only\s+the|just\s+the|refine|filter\s+(?:these|those|them|down|from)|instead|also\s+(?:in|with|by)|and\s+(?:in|with)\s)/i.test(text);
+}
+
+/** Human-readable list of carried filters for the prompt. */
+function formatCarriedFilters(values: Record<string, unknown>): string {
+  return Object.entries(values)
+    .map(([k, v]) => `  - ${k}: ${Array.isArray(v) ? `[${v.join(', ')}]` : JSON.stringify(v)}`)
+    .join('\n');
+}
+
+/**
+ * A single-case FIELD question ("what's the venue on that case", "who is the
+ * attorney on it") that references the case ANAPHORICALLY, with no case number in
+ * THIS message. Such a follow-up must go to getCaseParties for the case the user
+ * was just viewing — not a filter tool (e.g. "venue" → getByVenueId(0)).
+ */
+function anaphoricPartyFieldQuestion(text: string): boolean {
+  const field = /\b(part(?:y|ies)|contacts?|documents?|venue|insurance\s+carrier|carrier|applicant|defendant|attorney|coordinator|employer)\b/i;
+  const anaphor = /\b(?:that|this|the|same)\s+(?:case|one|matter|file)\b|\bon\s+it\b|\bfor\s+it\b/i;
+  const hasCaseNumber = /\b[A-Za-z]{1,3}\d{3,}\b/;
+  return field.test(text) && anaphor.test(text) && !hasCaseNumber.test(text);
+}
+
+/**
+ * "How many cases are in THAT venue?" — an anaphoric reference to the VENUE of the
+ * case the user was just viewing (not a field of the case itself). We resolve that
+ * case's venueId and search it, instead of asking which venue.
+ */
+function anaphoricVenueOfCaseQuestion(text: string): boolean {
+  return /\b(?:that|this|the|same)\s+venue\b/i.test(text)
+    && /\bcases?\b|\bhow\s+many\b/i.test(text)
+    && !/\bvenue\s*(?:id\s*)?\d/i.test(text);   // "venue 5" gives a concrete id — not anaphoric
+}
+
+/**
+ * A single-case FIELD question that NAMES the case ("who is the attorney on
+ * RP2134", "venue for case RP2010"). Returns the case number. Must go to
+ * getCaseParties — a role word like "attorney" otherwise pulls it to a staff /
+ * combined search. Distinct from the anaphoric form (no number) above.
+ */
+function explicitCasePartyFieldRef(text: string): string | null {
+  const m = text.match(
+    /\b(?:parties|part(?:y|ies)|contacts?|documents?|venue|insurance\s+carrier|carrier|applicant|defendant|attorney|coordinator|employer|adjuster)\b.{0,40}?\b(?:on|for)\b\s+(?:case\s+)?([A-Za-z]{1,3}\d{2,})\b/i,
+  );
+  return m ? m[1] : null;
+}
+
+/** The most recent case number referenced — a prior getCaseParties lookup, or one the user typed. */
+function lastCaseRefFromHistory(messages: UIMessage[]): string | null {
+  const CN = /\b([A-Za-z]{1,3}\d{3,})\b/;
+  for (const msg of [...messages].reverse()) {
+    if (msg.role === 'assistant') {
+      for (const part of (msg.parts ?? []) as { type: string; input?: { caseNumber?: string }; output?: { caseRef?: string } }[]) {
+        if (part.type !== 'tool-getCaseParties') continue;
+        const ref = part.output?.caseRef ?? part.input?.caseNumber;
+        const m = ref ? String(ref).match(CN) : null;
+        if (m) return m[1];
+      }
+    } else if (msg.role === 'user') {
+      const m = textOf(msg).match(CN);
+      if (m) return m[1];
+    }
+  }
+  return null;
 }
 
 /** Pull the plain text out of a UIMessage (first text part). */
@@ -244,22 +332,41 @@ function detectSearchType(messages: UIMessage[]): number {
  * even though the model correctly remembered and resent their values.
  * Mirrors detectSearchType's carry-forward pattern above for status.
  */
-function carryForwardFilterKeys(messages: UIMessage[]): Set<string> {
-  const keys = new Set<string>();
+function carryForwardFilterContext(messages: UIMessage[]): { values: Record<string, unknown>; keys: Set<string> } {
+  const empty = { values: {} as Record<string, unknown>, keys: new Set<string>() };
   for (const msg of [...messages].reverse()) {
     if (msg.role !== 'assistant') continue;
-    for (const part of (msg.parts ?? []) as { type: string; output?: { filterValue?: string } }[]) {
-      if (part.type !== 'tool-combinedSearch' || !part.output?.filterValue) continue;
-      try {
-        const prior = JSON.parse(part.output.filterValue) as Record<string, unknown>;
-        for (const k of Object.keys(prior)) keys.add(k);
-      } catch {
-        // malformed/empty filterValue — nothing to carry forward
+    for (const part of (msg.parts ?? []) as { type: string; output?: { filterType?: string; filterValue?: string } }[]) {
+      if (typeof part.type !== 'string' || !part.type.startsWith('tool-') || !part.output) continue;
+      const out = part.output;
+
+      // combinedSearch — filterValue is the JSON of the CombinedFilters used.
+      if (part.type === 'tool-combinedSearch' && out.filterValue) {
+        try {
+          const prior = JSON.parse(out.filterValue) as Record<string, unknown>;
+          const values: Record<string, unknown> = {};
+          for (const [k, v] of Object.entries(prior)) {
+            if (k === 'status' || k === 'subOutFilter') continue; // status carried via enforcedSearchType
+            values[k] = v;
+          }
+          return { values, keys: new Set(Object.keys(values)) };
+        } catch {
+          return empty;
+        }
       }
-      return keys;
+
+      // Single-filter tool — reconstruct its CombinedFilters field from filterType.
+      if (out.filterType && out.filterValue !== undefined && FILTER_VALUE_PARSERS[out.filterType]) {
+        const values = FILTER_VALUE_PARSERS[out.filterType](String(out.filterValue));
+        return { values, keys: new Set(Object.keys(values)) };
+      }
+
+      // Free-text search / parties — no structured filter to carry. Stop at the
+      // most recent search so we don't resurrect a filter from further back.
+      if (part.type === 'tool-searchCases' || part.type === 'tool-getCaseParties') return empty;
     }
   }
-  return keys;
+  return empty;
 }
 
 /**
@@ -464,7 +571,15 @@ ${guideContext}
   // so it ignores any filter the model invented (caseTypeId/venueId/…) that would
   // otherwise wipe the result via intersection.
   const allowedFilterKeys = allowedCombinedKeys(intents);
-  for (const k of carryForwardFilterKeys(messages)) allowedFilterKeys.add(k);
+  // Carry the prior search's structured filters forward (from combinedSearch OR a
+  // single-filter tool) so a refinement follow-up ("which of those are in venue
+  // 13", "closed ones instead") builds on them instead of silently dropping them.
+  const priorFilters = carryForwardFilterContext(messages);
+  for (const k of priorFilters.keys) allowedFilterKeys.add(k);
+  // A refinement turn (anaphoric/additive wording) with prior filters present →
+  // force combinedSearch so the model can't pick a single-filter tool that would
+  // structurally drop the earlier criteria.
+  const refining = priorFilters.keys.size > 0 && isRefinement(lastUserText);
 
   const anchorDate = clientNow ? new Date(clientNow) : new Date();
   const timeZone = clientTimeZone?.trim() || 'UTC';
@@ -524,19 +639,89 @@ RESOLVED DATE RANGE (server-computed — use these EXACT values, do not recalcul
   caseFromDate: "${resolvedDateRange.from}"
   caseToDate:   "${resolvedDateRange.to}"
   (${resolvedDateRange.label})
-You MUST call combinedSearch with the exact caseFromDate/caseToDate above (plus any other filter/status/person also mentioned). Pass the exact ISO dates above. Never answer date-filter questions from memory without calling a tool.`)
+You MUST call combinedSearch with the exact caseFromDate/caseToDate above (plus any other filter/status/person also mentioned). Pass the exact ISO dates above. Note: "opened in [year]" / "created in [year]" refers to the case OPEN DATE only — do NOT add an open/closed status filter unless the user explicitly says "open", "closed", or "sub-out". Never answer date-filter questions from memory without calling a tool.`)
     : '';
 
-  const selectedTools = (bareName || solNeedsYear)
-    ? { tools: {}, activeTools: [], forcedCombined: false, requireTool: false }
-    : selectToolsForIntents(
-        intents,
-        buildToolRegistry({
-          apiBaseUrl, jwtToken, enforcedSearchType, enforcedLabel,
-          personSignal, personName, allowedFilterKeys, resolvedDateRange,
-        }),
-        { explicitStatus: enforcedSearchType !== 1, hasPerson: personSignal !== 'none', hasResolvedDate: !!resolvedDateRange },
-      );
+  // When refining a prior search, tell the model exactly which filters to keep so
+  // it re-sends their values (combinedSearch only honours a key that's also in
+  // allowedFilterKeys, which we populated above from priorFilters).
+  const carriedFiltersSection = refining
+    ? `
+
+‼️ THIS TURN — REFINEMENT OF THE PREVIOUS SEARCH: The user is narrowing the previous results, NOT starting over. Call combinedSearch and INCLUDE these prior filters together with the new criterion the user just gave:
+${formatCarriedFilters(priorFilters.values)}
+Re-send every prior filter above (with the same values) plus the new one. Only drop them if the user clearly begins a brand-new, unrelated search.`
+    : '';
+
+  // Single-case field question → getCaseParties. Either the case is NAMED in this
+  // message ("who is the attorney on RP2134" — a role word would otherwise pull it
+  // to a staff/combined search), or it's anaphoric ("what's the venue on THAT
+  // case") and we take the case from the prior parties lookup.
+  const partiesFollowUpRef = (!bareName && !solNeedsYear)
+    ? (explicitCasePartyFieldRef(lastUserText)
+       ?? (anaphoricPartyFieldQuestion(lastUserText) ? lastCaseRefFromHistory(messages) : null))
+    : null;
+
+  const partiesFollowUpDirective = partiesFollowUpRef
+    ? `
+
+‼️ THIS TURN — The user is asking about a field (venue/attorney/applicant/insurance carrier/parties/etc.) of ONE specific case: ${partiesFollowUpRef}. Call getCaseParties with caseNumber "${partiesFollowUpRef}", then answer ONLY the specific field they asked, read from the parties result. Do NOT call a filter or search tool.`
+    : '';
+
+  // "How many cases are in THAT venue?" — resolve the prior case's venueId and
+  // search it, so the user gets the real count instead of being asked which venue.
+  const venueOfCaseRef = (!bareName && !solNeedsYear && !partiesFollowUpRef && anaphoricVenueOfCaseQuestion(lastUserText))
+    ? lastCaseRefFromHistory(messages)
+    : null;
+  const venueOfCaseId = venueOfCaseRef
+    ? await resolveCaseVenueId(apiBaseUrl, jwtToken, venueOfCaseRef)
+    : null;
+  if (venueOfCaseId) allowedFilterKeys.add('venueId');
+
+  const venueOfCaseDirective = venueOfCaseId
+    ? `
+
+‼️ THIS TURN — The user wants the cases in the SAME VENUE as the case they were viewing (${venueOfCaseRef}). That case's venue is venueId ${venueOfCaseId}. Call combinedSearch with venueId: ${venueOfCaseId} (plus any open/closed status they mention). Do NOT ask which venue — use ${venueOfCaseId}.`
+    : '';
+
+  // Stage-1 domain routing (see lib/domains). Cases is the fallback domain, so
+  // this is always [casesDomain] today — behaviour is unchanged — but Phase-2
+  // resource domains (Tasks/Events/…) slot in here with no other route edits.
+  const activeDomains = detectDomains(classifyText);
+  let selectedTools: ReturnType<typeof selectToolsForDomains>;
+  if (bareName || solNeedsYear) {
+    selectedTools = { tools: {}, activeTools: [], forcedCombined: false, requireTool: false };
+  } else if (partiesFollowUpRef) {
+    // Expose ONLY getCaseParties so the model can't fall back to a filter tool.
+    const reg = buildToolRegistry({
+      apiBaseUrl, jwtToken, enforcedSearchType, enforcedLabel,
+      personSignal, personName, allowedFilterKeys, resolvedDateRange,
+    });
+    const def = reg.get('getCaseParties')?.definition;
+    selectedTools = def
+      ? { tools: { getCaseParties: def }, activeTools: ['getCaseParties'], forcedCombined: false, requireTool: true }
+      : { tools: {}, activeTools: [], forcedCombined: false, requireTool: false };
+  } else if (venueOfCaseId) {
+    // "cases in that venue" — force combinedSearch with the resolved venueId.
+    const reg = buildToolRegistry({
+      apiBaseUrl, jwtToken, enforcedSearchType, enforcedLabel,
+      personSignal, personName, allowedFilterKeys, resolvedDateRange,
+    });
+    const def = reg.get('combinedSearch')?.definition;
+    selectedTools = def
+      ? { tools: { combinedSearch: def }, activeTools: ['combinedSearch'], forcedCombined: true, requireTool: true }
+      : { tools: {}, activeTools: [], forcedCombined: false, requireTool: false };
+  } else {
+    selectedTools = selectToolsForDomains(activeDomains, {
+      message: classifyText,
+      registry: buildToolRegistry({
+        apiBaseUrl, jwtToken, enforcedSearchType, enforcedLabel,
+        personSignal, personName, allowedFilterKeys, resolvedDateRange,
+      }),
+      intents,
+      selectorOpts: { explicitStatus: enforcedSearchType !== 1, hasPerson: personSignal !== 'none', hasResolvedDate: !!resolvedDateRange, forceContinuation: refining },
+    });
+  }
 
   let result;
   try {
@@ -662,7 +847,7 @@ Rules for searchText:
 - Keep searchText SHORT — name, case number, or keyword only.
 
 searchType values:
-- 1 = All Cases  2 = Open only  3 = Closed only  4 = Sub-Out only (status "Sub-d Out" — NOT "Sub-d In")${bareNameDirective}${solYearDirective}`,
+- 1 = All Cases  2 = Open only  3 = Closed only  4 = Sub-Out only (status "Sub-d Out" — NOT "Sub-d In")${bareNameDirective}${solYearDirective}${carriedFiltersSection}${partiesFollowUpDirective}${venueOfCaseDirective}`,
     messages: modelMessages,
     stopWhen: stepCountIs(5),
     tools: selectedTools.tools,
@@ -675,7 +860,10 @@ searchType values:
     // FORCED, require that exact tool; otherwise require any of the offered
     // tools (lets the model still choose between the single-filter tool and
     // combinedSearch, e.g. when it detects a person's name).
-    ...(selectedTools.forcedCombined
+    ...(partiesFollowUpRef
+      ? { prepareStep: ({ stepNumber }: { stepNumber: number }) =>
+          stepNumber === 0 ? { toolChoice: { type: 'tool' as const, toolName: 'getCaseParties' } } : {} }
+      : selectedTools.forcedCombined
       ? { prepareStep: ({ stepNumber }: { stepNumber: number }) =>
           stepNumber === 0 ? { toolChoice: { type: 'tool' as const, toolName: 'combinedSearch' } } : {} }
       : selectedTools.requireTool
