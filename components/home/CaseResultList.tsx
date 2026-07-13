@@ -160,19 +160,19 @@ export default function CaseResultList({
   return (
     <div className="bg-background-50 border border-background-200 rounded-2xl rounded-tl-sm overflow-hidden shadow-sm">
       {/* Header bar */}
-      <div className="case-result-header flex items-center justify-between px-4 py-2 border-b border-background-200">
-        <div className="flex items-center gap-2">
+      <div className="case-result-header flex items-center justify-between gap-3 px-4 py-2 border-b border-background-200">
+        <div className="flex items-center gap-2 flex-shrink-0">
           <div
             className="w-4 h-4 rounded flex items-center justify-center"
             style={{ background: 'linear-gradient(135deg, #6763AC, #3DC0EC)' }}
           >
             <i className="ri-folder-2-line text-white" style={{ fontSize: '9px' }} />
           </div>
-          <span className="text-xs font-semibold text-foreground-700">
+          <span className="text-xs font-semibold text-foreground-700 whitespace-nowrap">
             {effectiveTotal.toLocaleString()} case{effectiveTotal !== 1 ? 's' : ''} found
           </span>
         </div>
-        <span className="text-xs font-medium text-foreground-600 truncate max-w-[160px]">
+        <span className="text-xs font-medium text-foreground-600 whitespace-normal break-words text-right min-w-0 flex-1">
           &ldquo;{query}&rdquo;
         </span>
       </div>
