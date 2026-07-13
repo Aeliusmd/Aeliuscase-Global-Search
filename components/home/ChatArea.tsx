@@ -23,6 +23,7 @@ interface ChatAreaProps {
   variant?: 'full' | 'widget';
   onFirstMessage?: (title: string) => void;
   onUpdateTitle?: (id: string, title: string) => void;
+  onConversationActivity?: (id: string) => void;
   onToggleSidebar?: () => void;
   onMaximize?: () => void;
   onMinimize?: () => void;
@@ -36,6 +37,7 @@ export default function ChatArea({
   variant = 'full',
   onFirstMessage,
   onUpdateTitle,
+  onConversationActivity,
   onToggleSidebar,
   onMaximize,
   onMinimize,
@@ -92,7 +94,10 @@ export default function ChatArea({
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ messages }),
     }).catch(() => {});
-  }, [messages, hydrated, conversationId, status]);
+    // Bump this chat to the top of "Recent Searches" — every exchange counts
+    // as activity, not just a brand-new chat's first message.
+    onConversationActivity?.(conversationId);
+  }, [messages, hydrated, conversationId, status, onConversationActivity]);
 
   // Auto-scroll to bottom
   useEffect(() => {

@@ -4,7 +4,6 @@ export interface ConversationDoc {
   _id: string;
   title: string;
   preview: string;
-  timestamp: string;
   pinned: boolean;
   messages: UIMessage[];
   createdAt: Date;
@@ -16,6 +15,7 @@ export interface ConversationMeta {
   id: string;
   title: string;
   preview: string;
-  timestamp: string;
+  /** ISO timestamp — the sidebar formats this to a relative label ("5m ago") at render time. */
+  updatedAt: string;
   pinned?: boolean;
 }

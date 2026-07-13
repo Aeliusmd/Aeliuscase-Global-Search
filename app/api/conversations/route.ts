@@ -33,7 +33,6 @@ export async function POST(req: Request) {
       _id: body.id,
       title: body.title,
       preview: body.preview ?? body.title,
-      timestamp: 'Just now',
       pinned: false,
       messages: [],
       createdAt: now,

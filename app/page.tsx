@@ -22,14 +22,14 @@ export default function Home() {
   useEffect(() => {
     fetch('/api/conversations')
       .then((r) => r.json())
-      .then(({ data }: { data: Array<{ _id: string; title: string; preview: string; timestamp: string; pinned?: boolean }> }) => {
+      .then(({ data }: { data: Array<{ _id: string; title: string; preview: string; updatedAt: string; pinned?: boolean }> }) => {
         if (Array.isArray(data) && data.length > 0) {
           setConversations(
             data.map((d) => ({
               id: d._id,
               title: d.title,
               preview: d.preview,
-              timestamp: d.timestamp,
+              updatedAt: d.updatedAt,
               pinned: d.pinned ?? false,
             })),
           );
@@ -61,7 +61,7 @@ export default function Home() {
         id: pendingNewId,
         title,
         preview: title,
-        timestamp: 'Just now',
+        updatedAt: new Date().toISOString(),
         pinned: false,
       };
       // Optimistic UI — add to list immediately
@@ -76,6 +76,19 @@ export default function Home() {
     },
     [pendingNewId],
   );
+
+  // A message was sent/received in an existing chat — bump it to the top of
+  // "Recent Searches" and refresh its relative timestamp, matching the DB's
+  // own updatedAt-sorted ordering (server truth is bumped by the PATCH in
+  // ChatArea; this keeps the client list in sync without a refetch).
+  const handleConversationActivity = useCallback((id: string) => {
+    setConversations((prev) => {
+      const idx = prev.findIndex((c) => c.id === id);
+      if (idx === -1) return prev;
+      const bumped: ConversationMeta = { ...prev[idx], updatedAt: new Date().toISOString() };
+      return [bumped, ...prev.slice(0, idx), ...prev.slice(idx + 1)];
+    });
+  }, []);
 
   const handleUpdateTitle = useCallback((id: string, title: string) => {
     setConversations((prev) =>
@@ -159,6 +172,7 @@ export default function Home() {
             variant={isMaximized ? 'full' : 'widget'}
             onFirstMessage={handleFirstMessage}
             onUpdateTitle={handleUpdateTitle}
+            onConversationActivity={handleConversationActivity}
             onToggleSidebar={handleToggleSidebar}
             onMaximize={() => setWidgetView('maximized')}
             onMinimize={() => {
