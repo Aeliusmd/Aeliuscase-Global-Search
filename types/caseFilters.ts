@@ -28,6 +28,9 @@ export interface NewCaseDTO {
   } | null;
   caseEmployee?: { company?: string } | null;
   caseVenue?: { venueName?: string } | null;
+  /** Per-injury claims, each with its own statute-of-limitations date. A case can
+   *  have several (see lib/caseFilters.ts's SOL client-side re-filter). */
+  injury?: { statuteLimitation?: string }[];
 }
 
 /**

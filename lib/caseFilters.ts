@@ -298,14 +298,114 @@ export async function fetchCombinedCases(opts: {
   // on Next/Previous (a venue search must page as 'venueId', not 'combined').
   filterType?: string;
 }): Promise<FilterToolOutput> {
+  const page = opts.page ?? 1;
+  const solFrom = typeof opts.body.solFromDate === 'string' ? opts.body.solFromDate : undefined;
+  const solTo = typeof opts.body.solToDate === 'string' ? opts.body.solToDate : undefined;
+
+  // GetCaseListCombined's own solFromDate/solToDate filtering is unreliable —
+  // live-verified 2026-07-13 across 4 distinct date ranges: it returns a
+  // SUPERSET of the true matches (0 false negatives every time) but with heavy
+  // false positives (e.g. "expiring in 2027" claimed 480, only 401 actually had
+  // an injury statuteLimitation in 2027). Backend still narrows the candidate
+  // pool usefully, so we keep sending solFromDate/solToDate, then re-validate
+  // every candidate against its real per-injury statuteLimitation ourselves.
+  if (solFrom || solTo) {
+    return fetchCombinedCasesSolFiltered({ ...opts, page, solFrom, solTo });
+  }
+
   return callFilterNested({
-    apiBaseUrl: opts.apiBaseUrl, jwtToken: opts.jwtToken, page: opts.page ?? 1,
+    apiBaseUrl: opts.apiBaseUrl, jwtToken: opts.jwtToken, page,
     endpoint: 'GetCaseListCombined',
     body: opts.body,
     filterType: opts.filterType ?? 'combined',
     filterLabel: opts.filterLabel,
     filterValue: opts.filterValue,
   });
+}
+
+/** Inclusive membership check on the "YYYY-MM-DD" date prefix of an ISO string. */
+function dateInRange(iso: string | undefined, from?: string, to?: string): boolean {
+  if (!iso) return false;
+  const d = iso.slice(0, 10);
+  if (from && d < from) return false;
+  if (to && d > to) return false;
+  return true;
+}
+
+/**
+ * SOL-aware variant of fetchCombinedCases (see caller for why this exists).
+ * Fetches backend's full (over-inclusive) candidate pool in large batches,
+ * re-filters by each case's real injury[].statuteLimitation, then paginates
+ * the TRUE result ourselves — backend pagination happens before its broken
+ * filtering, so we can't trust its page/totalRecords for a SOL query.
+ */
+async function fetchCombinedCasesSolFiltered(opts: {
+  apiBaseUrl: string; jwtToken: string;
+  body: Record<string, unknown>;
+  filterLabel: string; filterValue: string; page: number;
+  filterType?: string;
+  solFrom?: string; solTo?: string;
+}): Promise<FilterToolOutput> {
+  const { apiBaseUrl, jwtToken, body, filterLabel, filterValue, page, solFrom, solTo } = opts;
+  const filterType = opts.filterType ?? 'combined';
+
+  const fail = (error: string): FilterToolOutput => ({
+    success: false, filterType, filterLabel, filterValue,
+    cases: [], totalRecords: 0, totalPages: 0, hasMorePages: false, page: 1, error,
+  });
+
+  // Safety cap on how many candidate rows we'll pull before re-filtering —
+  // comfortably above the current total case count (~3.6k) so a normal SOL
+  // query's candidate pool (verified a few hundred, worst case low thousands)
+  // is never truncated, while still bounding a pathological/unfiltered query.
+  const MAX_CANDIDATES = 3000;
+  const BATCH_SIZE = 1000;
+
+  try {
+    let candidates: NewCaseDTO[] = [];
+    let backendTotal = Infinity;
+    let fetchPage = 1;
+    while (candidates.length < backendTotal && candidates.length < MAX_CANDIDATES) {
+      const res = await fetch(`${apiBaseUrl}/api/Case/GetCaseListCombined`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${jwtToken}`,
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+        },
+        body: JSON.stringify({ ...body, page: fetchPage, pageSize: BATCH_SIZE }),
+        cache: 'no-store',
+      });
+      if (!res.ok) return fail(`API error ${res.status}`);
+      const json = (await res.json()) as { succeeded?: boolean; message?: string; data?: NestedCaseListData };
+      if (!json.succeeded) return fail(json.message ?? 'Filter failed');
+      const d = json.data ?? {};
+      const batch = d.cases ?? [];
+      if (batch.length === 0) break;
+      candidates = candidates.concat(batch);
+      backendTotal = d.totalRecords ?? candidates.length;
+      fetchPage += 1;
+    }
+
+    const trueMatches = candidates.filter((c) =>
+      (c.injury ?? []).some((i) => dateInRange(i.statuteLimitation, solFrom, solTo)),
+    );
+
+    const totalRecords = trueMatches.length;
+    const totalPages = Math.max(1, Math.ceil(totalRecords / FILTER_PAGE_SIZE));
+    const start = (page - 1) * FILTER_PAGE_SIZE;
+    const pageRows = trueMatches.slice(start, start + FILTER_PAGE_SIZE);
+
+    return {
+      success: true, filterType, filterLabel, filterValue,
+      cases: pageRows.map(mapNestedDTO),
+      totalRecords, totalPages,
+      hasMorePages: page < totalPages,
+      page,
+    };
+  } catch (err) {
+    return fail(err instanceof Error ? err.message : 'Unexpected error');
+  }
 }
 
 
