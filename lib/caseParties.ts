@@ -117,11 +117,11 @@ export async function fetchCaseParties(
 
     const parties: CaseParty[] = (body?.data ?? []).map((party) => ({
       ...party,
-      partyDocs: party?.partyDocs ?? [],
+      docs: party?.docs ?? [],
     }));
 
     const partyDocs: CasePartyDoc[] = parties.flatMap(
-      (party) => party.partyDocs ?? [],
+      (party) => party.docs ?? [],
     );
 
     return {

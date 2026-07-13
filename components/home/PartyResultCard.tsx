@@ -37,7 +37,7 @@ export default function PartyResultCard({ result }: { result: PartiesToolOutput 
         <table className="w-full text-sm">
           <thead className="bg-background-100">
             <tr>
-              {['Role', 'Company', 'Phone', 'Email'].map((h) => (
+              {['Role', 'Name'].map((h) => (
                 <th
                   key={h}
                   className="px-4 py-2 text-left text-xs font-semibold text-foreground-600"
@@ -52,23 +52,17 @@ export default function PartyResultCard({ result }: { result: PartiesToolOutput 
               parties.map((party, i) => (
                 <tr key={i}>
                   <td className="px-4 py-2.5 text-foreground-800 border-t border-background-100 whitespace-nowrap">
-                    {party.partyTypeName}
+                    {party.partyType || '—'}
                   </td>
                   <td className="px-4 py-2.5 text-foreground-800 border-t border-background-100">
-                    {party.company || '—'}
-                  </td>
-                  <td className="px-4 py-2.5 text-foreground-800 border-t border-background-100 whitespace-nowrap">
-                    {party.phone || '—'}
-                  </td>
-                  <td className="px-4 py-2.5 text-foreground-800 border-t border-background-100">
-                    {party.email || '—'}
+                    {party.partyName || '—'}
                   </td>
                 </tr>
               ))
             ) : (
               <tr>
                 <td
-                  colSpan={4}
+                  colSpan={2}
                   className="px-4 text-center text-foreground-500 py-4 text-sm border-t border-background-100"
                 >
                   No parties found.
