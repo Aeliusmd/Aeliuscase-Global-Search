@@ -26,6 +26,7 @@ export interface ToolEntry {
 }
 
 import type { DateRange } from '@/lib/dateRange';
+import type { RoleSlotResolution } from '@/lib/roleSlots';
 
 export interface RegistryDeps {
   apiBaseUrl: string;
@@ -40,12 +41,20 @@ export interface RegistryDeps {
   allowedFilterKeys?: Set<string>;
   /** Server-computed case date range from the user's message. */
   resolvedDateRange?: DateRange | null;
+  /**
+   * Case-role slot (Attorney/Paralegal/…) resolved deterministically from the
+   * user's own words — passed to combinedSearch/getByStaff INSTEAD OF the
+   * model's own jobRole tool argument, which the model can invent (e.g. "Other
+   * Attorney" the user never said), silently zeroing out the result.
+   */
+  resolvedRoleSlot?: RoleSlotResolution;
 }
 
 export function buildToolRegistry(deps: RegistryDeps): Map<string, ToolEntry> {
   const {
     apiBaseUrl, jwtToken, enforcedSearchType, enforcedLabel,
     personSignal = 'none', personName = null, allowedFilterKeys, resolvedDateRange = null,
+    resolvedRoleSlot = null,
   } = deps;
   const fd = { apiBaseUrl, jwtToken, resolvedDateRange };
 
@@ -103,12 +112,12 @@ export function buildToolRegistry(deps: RegistryDeps): Map<string, ToolEntry> {
       intentTags: ['filter_last_name'],
     }],
     ['getByStaff', {
-      definition: makeGetByStaffTool(fd),
+      definition: makeGetByStaffTool({ ...fd, resolvedRoleSlot }),
       intentTags: ['filter_staff'],
     }],
     ['combinedSearch', {
       definition: makeCombinedSearchTool({
-        ...fd, personSignal, personName, allowedFilterKeys, resolvedDateRange, enforcedSearchType,
+        ...fd, personSignal, personName, allowedFilterKeys, resolvedDateRange, enforcedSearchType, resolvedRoleSlot,
       }),
       intentTags: [],   // selected specially when 2+ filter intents are present
     }],

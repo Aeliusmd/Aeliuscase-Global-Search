@@ -116,6 +116,16 @@ body {
   color: oklch(var(--foreground-950));
 }
 
+/* Transparent canvas for UAT iframe embed — class toggled on /embed only */
+html.embed-transparent,
+html.embed-transparent body {
+  background: transparent !important;
+}
+
+html.embed-transparent .embed-shell {
+  background: transparent;
+}
+
 ::-webkit-scrollbar { width: 4px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: oklch(var(--primary-200)); border-radius: 9999px; }

@@ -1,5 +1,5 @@
 import { openai } from '@ai-sdk/openai';
-import { convertToModelMessages, stepCountIs, streamText } from 'ai';
+import { convertToModelMessages, generateText, stepCountIs, streamText } from 'ai';
 import type { UIMessage } from 'ai';
 import OpenAI from 'openai';
 import { classifyIntents, type IntentKey } from '@/lib/tools/intentRouter';
@@ -8,6 +8,7 @@ import { detectDomains, selectToolsForDomains } from '@/lib/domains';
 import { formatTodayContext, parseDateRange } from '@/lib/dateRange';
 import { BODY_PART_IDS_TEXT } from '@/lib/bodyParts';
 import { resolveCaseVenueId } from '@/lib/caseParties';
+import { resolveRoleSlot, type RoleSlotResolution } from '@/lib/roleSlots';
 
 export const maxDuration = 30;
 
@@ -78,7 +79,42 @@ const FILTER_VALUE_PARSERS: Record<string, (v: string) => Record<string, unknown
 
 /** Anaphoric / additive wording that marks a message as REFINING the prior search. */
 function isRefinement(text: string): boolean {
-  return /\b(those|these|them|the\s+ones|of\s+the(?:se|m)\b|from\s+(?:the\s+)?above|from\s+those|from\s+these|which\s+of|narrow(?:\s+down)?|within\s+(?:those|these)|only\s+the|just\s+the|refine|filter\s+(?:these|those|them|down|from)|instead|also\s+(?:in|with|by)|and\s+(?:in|with)\s)/i.test(text);
+  return /\b(they|those|these|them|all\s+of\s+them|the\s+ones|of\s+the(?:se|m)\b|from\s+(?:the\s+)?above|from\s+those|from\s+these|which\s+of|narrow(?:\s+down)?|within\s+(?:those|these)|only\s+the|just\s+the|refine|filter\s+(?:these|those|them|down|from)|instead|also\s+(?:in|with|by)|and\s+(?:in|with)\s)/i.test(text);
+}
+
+/**
+ * LLM fallback for isRefinement(). The regex above is a fast, free, zero-latency
+ * first check that catches the common/explicit anaphoric phrasings — but it's a
+ * hand-maintained word list, so novel phrasing (e.g. "are they all open cases?"
+ * before "they" was added) silently falls through, leaving the model to guess an
+ * answer from stale/trimmed context instead of re-querying (this exact bug was
+ * reported and fixed once already — this is the general-case fix).
+ *
+ * This only answers "is this message a follow-up on the PREVIOUS search", nothing
+ * more — the actual tool-call decision stays fully deterministic server-side
+ * (`refining` still just forces combinedSearch). So this can't reintroduce the
+ * original hallucination failure mode (the model autonomously deciding whether to
+ * call a tool) — it only feeds the same deterministic gate the regex already does.
+ * Only invoked when there IS a prior filter to refine (see call site), so a fresh
+ * first message never pays this cost.
+ */
+async function isRefinementLLM(message: string, priorLabel: string): Promise<boolean> {
+  try {
+    const { text } = await generateText({
+      model: openai('gpt-4o-mini'),
+      system: `You classify ONE chat message sent to a legal case-search assistant.
+The user's PREVIOUS search was filtered by: ${priorLabel}.
+Does the NEW message below build on / narrow down / ask a question about THOSE SAME results (a follow-up) — or does it start a brand-new, unrelated search?
+Reply with EXACTLY one word: FOLLOWUP or NEW. No punctuation, no explanation.`,
+      prompt: message,
+      maxOutputTokens: 16, // OpenAI's minimum for this API path — verified live, 5 throws a 400
+      temperature: 0,
+    });
+    return /FOLLOWUP/i.test(text);
+  } catch (err) {
+    console.error('[/api/chat] isRefinementLLM failed, defaulting to NEW:', err);
+    return false;
+  }
 }
 
 /** Human-readable list of carried filters for the prompt. */
@@ -521,7 +557,7 @@ export async function POST(req: Request) {
   // Deterministic STAFF-vs-CLIENT signal from the user's own words (current turn
   // + any clarification answer). Governs combinedSearch name routing so a bare
   // name is never silently assumed to be staff — the tool asks instead.
-  const personSignal: 'staff' | 'applicant' | 'none' =
+  let personSignal: 'staff' | 'applicant' | 'none' =
     /\b(applicant|claimant|injured\s+worker|client)\b/i.test(classifyText) ? 'applicant'
       : /\b(attorney|paralegal|coordinator|legal\s+secretary|legal\s+assistant|senior\s+associate|hearing\s+rep(?:resentative)?|supervis(?:e|es|or|ed|ing)|staff(\s+member)?|handled\s+by|assigned\s+to|supervised\s+by)\b/i.test(classifyText) ? 'staff'
         : 'none';
@@ -529,19 +565,47 @@ export async function POST(req: Request) {
   // The actual person name following that signal — passed to combinedSearch so the
   // name is routed deterministically (model tends to drop applicant names or turn
   // them into a last-name initial).
-  const personName = personSignal !== 'none' ? extractPersonName(classifyText) : null;
+  let personName = personSignal !== 'none' ? extractPersonName(classifyText) : null;
+
+  // Deterministic ROLE-SLOT detection, mirroring personName above: the model's
+  // own `jobRole` tool argument was previously trusted unconditionally (in
+  // combined.ts / staff.ts), which let it invent a role (e.g. "Other Attorney")
+  // the user never named — silently zeroing out results. Resolve the slot from
+  // the user's own words instead; the tools now use ONLY this, never the
+  // model-supplied jobRole.
+  let resolvedRoleSlot: RoleSlotResolution = personSignal === 'staff' ? resolveRoleSlot(classifyText) : null;
+
+  // Carry the prior search's structured filters forward (from combinedSearch OR a
+  // single-filter tool) so a refinement follow-up ("which of those are in venue
+  // 13", "closed ones instead") builds on them instead of silently dropping them.
+  // Computed here (rather than after) so its result can gate the LLM refinement
+  // classifier below and run inside the SAME Promise.all — no added latency.
+  const priorFilters = carryForwardFilterContext(messages);
+  const regexRefining = priorFilters.keys.size > 0 && isRefinement(lastUserText);
+  // Only ask the LLM when the fast regex didn't already decide AND there's a
+  // prior filter worth refining — a fresh first message never pays this cost.
+  const needsLLMRefinementCheck = priorFilters.keys.size > 0 && !regexRefining;
 
   let guideContext: string;
   let modelMessages: Awaited<ReturnType<typeof convertToModelMessages>>;
+  let llmRefining = false;
   try {
-    [guideContext, modelMessages] = await Promise.all([
+    [guideContext, modelMessages, llmRefining] = await Promise.all([
       fetchGuideContext(lastUserText),
       convertToModelMessages(trimToolOutputs(contextMessages)),
+      needsLLMRefinementCheck
+        ? isRefinementLLM(lastUserText, formatCarriedFilters(priorFilters.values))
+        : Promise.resolve(false),
     ]);
   } catch (err) {
     console.error('[/api/chat] convertToModelMessages failed:', err);
     return Response.json({ error: 'Message preparation failed', detail: String(err) }, { status: 500 });
   }
+  // Deterministic gate: regex (fast path) OR LLM classifier (fallback for
+  // phrasing the regex doesn't recognize) — either one forces the same
+  // server-side combinedSearch call. See isRefinementLLM's doc comment for why
+  // this can't reintroduce the original hallucination failure mode.
+  const refining = regexRefining || llmRefining;
 
   const guideSection = guideContext
     ? `━━━ AELIUSCASE USER GUIDE — RELEVANT EXCERPTS ━━━
@@ -569,17 +633,33 @@ ${guideContext}
   const intents = classifyIntents(classifyText);
   // Structured filters the user's words actually license — passed to combinedSearch
   // so it ignores any filter the model invented (caseTypeId/venueId/…) that would
-  // otherwise wipe the result via intersection.
+  // otherwise wipe the result via intersection. (priorFilters/refining computed
+  // earlier, alongside the guideContext/modelMessages fetch — see above.)
   const allowedFilterKeys = allowedCombinedKeys(intents);
-  // Carry the prior search's structured filters forward (from combinedSearch OR a
-  // single-filter tool) so a refinement follow-up ("which of those are in venue
-  // 13", "closed ones instead") builds on them instead of silently dropping them.
-  const priorFilters = carryForwardFilterContext(messages);
   for (const k of priorFilters.keys) allowedFilterKeys.add(k);
-  // A refinement turn (anaphoric/additive wording) with prior filters present →
-  // force combinedSearch so the model can't pick a single-filter tool that would
-  // structurally drop the earlier criteria.
-  const refining = priorFilters.keys.size > 0 && isRefinement(lastUserText);
+
+  // On a refinement turn, carry the STAFF/APPLICANT signal forward too — a pure
+  // anaphoric follow-up ("are they all open cases?") has no role word/"client" of
+  // its own, but the prior combinedSearch already resolved one. Without this, the
+  // carried staffName/applicantName (from priorFilters) gets re-sent with
+  // personSignal='none', which makes combinedSearch ask the staff-or-applicant
+  // question again even though it was already established last turn.
+  if (refining && personSignal === 'none') {
+    if (typeof priorFilters.values.staffName === 'string') {
+      personSignal = 'staff';
+      personName = priorFilters.values.staffName;
+    } else if (typeof priorFilters.values.applicantName === 'string') {
+      personSignal = 'applicant';
+      personName = priorFilters.values.applicantName;
+    }
+  }
+  // Carry the resolved ROLE SLOT forward too on a refinement turn (e.g. "Raj's
+  // cases as paralegal" → "only the open ones" must stay scoped to paralegal,
+  // not revert to all of Raj's cases) — the follow-up naturally doesn't repeat
+  // the role word, so without this the slot would silently drop.
+  if (refining && !resolvedRoleSlot && typeof priorFilters.values.staffJobRole === 'string') {
+    resolvedRoleSlot = { kind: 'slot', jobRole: priorFilters.values.staffJobRole, label: priorFilters.values.staffJobRole };
+  }
 
   const anchorDate = clientNow ? new Date(clientNow) : new Date();
   const timeZone = clientTimeZone?.trim() || 'UTC';
@@ -695,7 +775,7 @@ Re-send every prior filter above (with the same values) plus the new one. Only d
     // Expose ONLY getCaseParties so the model can't fall back to a filter tool.
     const reg = buildToolRegistry({
       apiBaseUrl, jwtToken, enforcedSearchType, enforcedLabel,
-      personSignal, personName, allowedFilterKeys, resolvedDateRange,
+      personSignal, personName, allowedFilterKeys, resolvedDateRange, resolvedRoleSlot,
     });
     const def = reg.get('getCaseParties')?.definition;
     selectedTools = def
@@ -705,7 +785,7 @@ Re-send every prior filter above (with the same values) plus the new one. Only d
     // "cases in that venue" — force combinedSearch with the resolved venueId.
     const reg = buildToolRegistry({
       apiBaseUrl, jwtToken, enforcedSearchType, enforcedLabel,
-      personSignal, personName, allowedFilterKeys, resolvedDateRange,
+      personSignal, personName, allowedFilterKeys, resolvedDateRange, resolvedRoleSlot,
     });
     const def = reg.get('combinedSearch')?.definition;
     selectedTools = def
@@ -716,7 +796,7 @@ Re-send every prior filter above (with the same values) plus the new one. Only d
       message: classifyText,
       registry: buildToolRegistry({
         apiBaseUrl, jwtToken, enforcedSearchType, enforcedLabel,
-        personSignal, personName, allowedFilterKeys, resolvedDateRange,
+        personSignal, personName, allowedFilterKeys, resolvedDateRange, resolvedRoleSlot,
       }),
       intents,
       selectorOpts: { explicitStatus: enforcedSearchType !== 1, hasPerson: personSignal !== 'none', hasResolvedDate: !!resolvedDateRange, forceContinuation: refining },

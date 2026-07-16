@@ -34,6 +34,11 @@ next-env.d.ts
 *.claude
 CLAUDE.md
 
+# Cursor — local IDE config and plans (never commit)
+.cursor/
+.cursor/plans/uat_chatbot_integration_14c8efde.plan.md
+CURSOR.md
+
 # Not required to run the app — kept local only, excluded from the repo
 src/
 tests/

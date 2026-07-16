@@ -3,7 +3,7 @@ import { z } from 'zod';
 import type { FilterToolOutput } from '@/types/caseFilters';
 import { fetchStaffSearch } from '@/lib/caseFilters';
 import { combinedSearch, type CombinedFilters } from '@/lib/combinedFilter';
-import { resolveRoleSlot, hearingRepUnsupportedMessage } from '@/lib/roleSlots';
+import { hearingRepUnsupportedMessage, type RoleSlotResolution } from '@/lib/roleSlots';
 
 import type { DateRange } from '@/lib/dateRange';
 
@@ -37,6 +37,12 @@ export interface CombinedDeps {
   resolvedDateRange?: DateRange | null;
   /** Server-enforced open/closed filter — overrides model status when not All. */
   enforcedSearchType?: number;
+  /**
+   * Case-role slot resolved deterministically from the user's own words — used
+   * INSTEAD OF the model's own `jobRole` tool argument (see makeCombinedSearchTool
+   * below for why: the model can invent a role the user never named).
+   */
+  resolvedRoleSlot?: RoleSlotResolution;
 }
 
 /**
@@ -76,7 +82,6 @@ export function makeCombinedSearchTool(deps: CombinedDeps) {
       console.log('[combinedSearch tool] input:', JSON.stringify(i));
       const page = (i.page as number) || 1;
       const staffName = i.staffName as string | undefined;
-      const jobRole = i.jobRole as string | undefined;
       const applicantName = (typeof i.applicantName === 'string' && i.applicantName.trim() !== '')
         ? (i.applicantName as string).trim()
         : undefined;
@@ -154,9 +159,12 @@ export function makeCombinedSearchTool(deps: CombinedDeps) {
           }
         } else {
           // Staff — a named role here is the CASE SLOT to filter by (Attorney/
-          // Paralegal/…), NOT an HR-title tie-break. Resolve it to a VERIFIED slot
-          // string; an unrecognised string would make the API silently return all.
-          const slot = resolveRoleSlot(jobRole);
+          // Paralegal/…), NOT an HR-title tie-break. Use ONLY the server-resolved
+          // slot (deps.resolvedRoleSlot, from the user's own words) — never the
+          // model's own `jobRole` argument, which it can invent (e.g. "Other
+          // Attorney" the user never named), silently zeroing out the result via
+          // an over-narrow, unintended slot filter.
+          const slot = deps.resolvedRoleSlot ?? null;
           if (slot?.kind === 'unsupported') return fail(hearingRepUnsupportedMessage(personName), `Staff "${personName}"`);
           if (slot?.kind === 'slot') filters.staffJobRole = slot.jobRole;
 

@@ -2,11 +2,17 @@ import { tool, zodSchema } from 'ai';
 import { z } from 'zod';
 import type { FilterToolOutput } from '@/types/caseFilters';
 import { fetchStaffSearch, fetchByStaffId } from '@/lib/caseFilters';
-import { resolveRoleSlot, hearingRepUnsupportedMessage } from '@/lib/roleSlots';
+import { hearingRepUnsupportedMessage, type RoleSlotResolution } from '@/lib/roleSlots';
 
 export interface StaffDeps {
   apiBaseUrl: string;
   jwtToken: string;
+  /**
+   * Case-role slot resolved deterministically from the user's own words — used
+   * INSTEAD OF the model's own `jobRole` tool argument, which it can invent
+   * (e.g. "Other Attorney" the user never named), silently zeroing out results.
+   */
+  resolvedRoleSlot?: RoleSlotResolution;
 }
 
 /**
@@ -29,17 +35,17 @@ export function makeGetByStaffTool(deps: StaffDeps) {
       }),
     ),
     execute: async (input): Promise<FilterToolOutput> => {
-      const { name, jobRole, page } = input as { name: string; jobRole?: string; page: number };
+      const { name, page } = input as { name: string; page: number };
 
       const fail = (error: string): FilterToolOutput => ({
         success: false, filterType: 'staffId', filterLabel: `Staff "${name}"`, filterValue: '',
         cases: [], totalRecords: 0, totalPages: 0, hasMorePages: false, page: 1, error,
       });
 
-      // Resolve the named role to a VERIFIED slot string (never send a raw string —
-      // an unrecognised one makes the API silently return ALL cases). Hearing Rep
-      // is a known slot whose API code is not yet confirmed → tell the user.
-      const slot = resolveRoleSlot(jobRole);
+      // Use ONLY the server-resolved role slot (from the user's own words) —
+      // never the model's own `jobRole` argument, which it can invent (e.g.
+      // "Other Attorney" the user never named), silently zeroing out results.
+      const slot = deps.resolvedRoleSlot ?? null;
       if (slot?.kind === 'unsupported') return fail(hearingRepUnsupportedMessage(name));
       const roleString = slot?.kind === 'slot' ? slot.jobRole : undefined;
 
