@@ -1,5 +1,5 @@
 import type { FilterToolOutput } from '@/types/caseFilters';
-import { fetchCombinedCases } from '@/lib/caseFilters';
+import { fetchCombinedCases, fetchCasesByStatusLabel } from '@/lib/caseFilters';
 
 /**
  * Combined (AND) filtering across the case filters.
@@ -21,6 +21,14 @@ export interface CombinedFilters {
   staffJobRole?: string;       // verified case-slot string (Attorney/Paralegal/…) for the staff filter
   applicantName?: string;      // client / injured-worker name (mapped to searchText)
   status?: number;             // searchType 1–4 (mapped to the endpoint's searchType)
+  /**
+   * A detailed case-status LABEL (e.g. "Settled", "Sub-d Out", "Dismissed") —
+   * the granular categories on the backend's "Employee Workload" admin screen,
+   * distinct from `status` (the simple Open/Closed/Sub-Out toggle). Resolved to
+   * live status ID(s) via lib/caseStatus.ts at query time — never hard-coded,
+   * since IDs (and even which labels exist) are firm-specific data.
+   */
+  caseStatusLabel?: string;
   lastNameInitial?: string;
   bodyPartIds?: number[];
   solFromDate?: string;
@@ -57,7 +65,12 @@ function buildCombinedRequestBody(f: CombinedFilters): Record<string, unknown> {
   if (has(f.staffId)) body.staffId = f.staffId;
   if (str(f.staffJobRole)) body.staffRole = f.staffJobRole.trim();
   // status 1 (All) and undefined both mean "no status restriction" → omit.
-  if (f.status && f.status >= 2 && f.status <= 4) body.searchType = f.status;
+  // A caseStatusLabel query is already fully specific — layering the coarse
+  // Open/Closed/Sub-Out toggle on top would silently AND-narrow it further
+  // (e.g. "Settled" gets misread by explicitStatusFromText as status=Closed,
+  // "Sub-d Out" as status=Sub-Out), risking a wrong or zeroed count on any
+  // label that isn't a strict subset of that guessed toggle. Skip it here.
+  if (!str(f.caseStatusLabel) && f.status && f.status >= 2 && f.status <= 4) body.searchType = f.status;
   if (str(f.lastNameInitial)) body.lastNameInitial = f.lastNameInitial.trim().charAt(0).toUpperCase();
   if (f.bodyPartIds && f.bodyPartIds.length > 0) body.bodyPartIds = [...f.bodyPartIds].sort((a, b) => a - b);
   if (str(f.solFromDate)) body.solFromDate = f.solFromDate;
@@ -68,6 +81,8 @@ function buildCombinedRequestBody(f: CombinedFilters): Record<string, unknown> {
   if (has(f.caseSubTypeId)) body.caseSubTypeId = f.caseSubTypeId;
   if (has(f.caseSubStatusId)) body.caseSubStatusId = f.caseSubStatusId;
   if (has(f.caseSubStatusId2)) body.caseSubStatusId2 = f.caseSubStatusId2;
+  // caseStatusLabel is NOT a literal API field — combinedSearch() resolves it to
+  // live status id(s) via fetchCasesByStatusLabel instead of sending it here.
   // Applicant / client name → searchText (endpoint matches applicant + company + case number).
   if (str(f.applicantName)) body.searchText = f.applicantName.trim();
   body.subOutFilter = f.subOutFilter ?? 'include';
@@ -77,7 +92,11 @@ function buildCombinedRequestBody(f: CombinedFilters): Record<string, unknown> {
 /** Human-readable label for the result card header. */
 function buildLabel(f: CombinedFilters): string {
   const parts: string[] = [];
-  if (f.status && f.status !== 1) parts.push(STATUS_LABELS[f.status] ?? `Status ${f.status}`);
+  // Skip the coarse Open/Closed/Sub-Out label when a detailed caseStatusLabel is
+  // present — it's redundant at best (and was never applied to the query; see
+  // buildCombinedRequestBody) and misleadingly implies a second filter was used.
+  if (!str(f.caseStatusLabel) && f.status && f.status !== 1) parts.push(STATUS_LABELS[f.status] ?? `Status ${f.status}`);
+  if (str(f.caseStatusLabel)) parts.push(f.caseStatusLabel.trim());
   if (has(f.caseTypeId)) parts.push(`Type ${f.caseTypeId}`);
   if (has(f.caseSubTypeId)) parts.push(`Sub-Type ${f.caseSubTypeId}`);
   if (has(f.caseSubStatusId)) parts.push(`Sub-Status ${f.caseSubStatusId}`);
@@ -125,6 +144,19 @@ export async function combinedSearch(
   }
 
   console.log('[combinedSearch] filters:', JSON.stringify(filters), '| body:', JSON.stringify(body), '| page:', page);
+
+  if (str(filters.caseStatusLabel)) {
+    // Detailed status label (Settled/Sub-d Out/…) needs live id resolution +
+    // client-side merge across firm-specific (caseTypeId, statusId) pairs —
+    // a different engine than the single-shot combined call below. `body` has
+    // no caseStatusId of its own (CombinedFilters doesn't expose one), so it's
+    // a safe base to layer the resolved caseTypeId/caseStatusId onto per pair.
+    return fetchCasesByStatusLabel({
+      apiBaseUrl: deps.apiBaseUrl, jwtToken: deps.jwtToken,
+      statusLabel: filters.caseStatusLabel.trim(),
+      baseBody: body, page, filterLabel, filterValue,
+    });
+  }
 
   return fetchCombinedCases({
     apiBaseUrl: deps.apiBaseUrl, jwtToken: deps.jwtToken,

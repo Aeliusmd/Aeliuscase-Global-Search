@@ -1,36 +1,30 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import { useSearchParams } from 'next/navigation';
 import Sidebar from '@/components/home/Sidebar';
 import ChatArea from '@/components/home/ChatArea';
 import type { ConversationMeta } from '@/types/conversation';
+import { isAllowedOrigin } from '@/lib/auth/origins';
 import type { EmbedView } from '@/lib/embed/viewState';
 import { postChatViewChanged, postReady } from '@/lib/embed/viewState';
+import { syncEmbedModeToUrl } from '@/lib/embed/syncModeUrl';
 
 function generateId() {
   return `chat-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`;
 }
 
-function parseInitialView(mode: string | null): EmbedView {
-  if (mode === 'maximized') return 'maximized';
-  return 'compact';
-}
-
 export default function EmbedPageClient() {
-  const searchParams = useSearchParams();
-  const initialMode = parseInitialView(searchParams.get('mode'));
-
   const [activeId, setActiveId] = useState('');
   const [conversations, setConversations] = useState<ConversationMeta[]>([]);
   const [pendingNewId, setPendingNewId] = useState(generateId);
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [view, setView] = useState<EmbedView>(initialMode);
+  const [view, setView] = useState<EmbedView>('compact');
 
   useEffect(() => {
+    syncEmbedModeToUrl('compact');
     postReady();
-    postChatViewChanged(initialMode);
-  }, [initialMode]);
+    postChatViewChanged('compact');
+  }, []);
 
   useEffect(() => {
     const handleResize = () => {
@@ -67,6 +61,9 @@ export default function EmbedPageClient() {
 
   const setViewAndNotify = useCallback((next: EmbedView) => {
     setView(next);
+    if (next === 'compact' || next === 'maximized') {
+      syncEmbedModeToUrl(next);
+    }
     postChatViewChanged(next);
   }, []);
 
@@ -135,6 +132,22 @@ export default function EmbedPageClient() {
   const handleClose = useCallback(() => {
     setSidebarOpen(false);
     setViewAndNotify('closed');
+  }, [setViewAndNotify]);
+
+  useEffect(() => {
+    const handleMessage = (event: MessageEvent) => {
+      if (!isAllowedOrigin(event.origin)) return;
+      if (event.data?.type === 'OPEN_CHAT') {
+        setViewAndNotify('compact');
+      }
+      if (event.data?.type === 'REQUEST_CLOSE') {
+        setSidebarOpen(false);
+        setViewAndNotify('closed');
+      }
+    };
+
+    window.addEventListener('message', handleMessage);
+    return () => window.removeEventListener('message', handleMessage);
   }, [setViewAndNotify]);
 
   useEffect(() => {

@@ -40,6 +40,7 @@ type ToolPart = {
  * too — it's handled via enforcedSearchType, not an intent.
  */
 const INTENT_COMBINED_KEYS: Partial<Record<IntentKey, string[]>> = {
+  filter_status_label: ['caseStatusLabel'],
   filter_case_type:   ['caseTypeId'],
   filter_venue:       ['venueId'],
   filter_sub_type:    ['caseSubTypeId'],
@@ -189,6 +190,19 @@ function textOf(msg: UIMessage | undefined): string {
 }
 
 /** Map an explicit status keyword in a message to a searchType (0 = none found). */
+/**
+ * Deterministically detects an explicit COUNT question ("how many...", "how much...",
+ * "what's the total number of...", "count of..."). Used to safely re-enable a spoken
+ * number in the model's reply: rather than trusting the model to read totalRecords out
+ * of the tool-result JSON (proven unreliable — it has both hallucinated a wrong number
+ * and silently omitted it for the exact same query), `prepareStep` below injects the
+ * REAL totalRecords value into the prompt only for this narrow, explicitly-detected
+ * case, so the model only ever has to copy a number we hand it, never compute one.
+ */
+function isCountQuestion(text: string): boolean {
+  return /\bhow\s+many\b|\bhow\s+much\b|\b(?:count|number|total)\s+of\b|\btotal\s+number\b|\bcount\b.*\bcases?\b/i.test(text);
+}
+
 function explicitStatusFromText(text: string): number {
   const t = text.toLowerCase();
   if (/\b(open|active|current|pending|not closed)\b/.test(t)) return 2;
@@ -285,7 +299,15 @@ function extractPersonName(text: string): string | null {
   const STOPCUT = new Set(['in', 'with', 'on', 'at', 'for', 'and', 'venue', 'open', 'closed', 'active', 'pending', 'sub', 'cases', 'case', 'that', 'who', 'the', 'a', 'an', 'last', 'name', 'starts', 'type', 'as', 'is', 'of', 'from', 'to', 'wcab', 'dui', 'civil', 'employment', 'immigration', 'injury', 'personal',
     // verbs / pronouns a greedy pattern can wrongly pull into a name
     'handle', 'handles', 'handling', 'handled', 'manage', 'manages', 'managing', 'work', 'works', 'working', 'doing', 'does', 'do', 'assigned', 'responsible', 'these', 'those', 'them', 'this', 'by']);
-  const LEAD = new Set(['show', 'me', 'send', 'give', 'find', 'get', 'list', 'pull', 'please', 'can', 'you', 'the', 'my', 'a', 'an', 'i', 'want', 'need', 'for', 'with', 'cases', 'case', 'where', 'whose', 'who', 'that']);
+  const LEAD = new Set([
+    'show', 'me', 'send', 'give', 'find', 'get', 'list', 'pull', 'please', 'can', 'you', 'the', 'my', 'a', 'an', 'i', 'want', 'need', 'for', 'with', 'cases', 'case', 'where', 'whose', 'who', 'that',
+    // A role word can leak into the front of the capture via the interrogative
+    // pattern above ("does ATTORNEY Raj Patel have" — NAME's greedy word class
+    // doesn't know "attorney" is a role, not part of the name). Peel it off here
+    // token-by-token, same as any other filler.
+    'attorney', 'paralegal', 'coordinator', 'supervisor', 'supervising', 'other', 'staff',
+    'legal', 'secretary', 'assistant', 'senior', 'associate', 'hearing', 'rep', 'representative', 'sup',
+  ]);
   for (const re of patterns) {
     const m = text.match(re);
     if (!m?.[1]) continue;
@@ -554,6 +576,10 @@ export async function POST(req: Request) {
       ? `cases expiring in ${lastUserText}`
       : lastUserText;
 
+  // Explicit "how many"/"how much"/"count of" question — see isCountQuestion for
+  // why this unlocks a real, injected number instead of a model-guessed one.
+  const countQuestion = isCountQuestion(classifyText);
+
   // Deterministic STAFF-vs-CLIENT signal from the user's own words (current turn
   // + any clarification answer). Governs combinedSearch name routing so a bare
   // name is never silently assumed to be staff — the tool asks instead.
@@ -805,9 +831,7 @@ Re-send every prior filter above (with the same values) plus the new one. Only d
 
   let result;
   try {
-    result = streamText({
-    model: openai('gpt-4o-mini'),
-    system: `You are a smart assistant for Aeliuscase, a law firm case management platform.
+    const systemPrompt = `You are a smart assistant for Aeliuscase, a law firm case management platform.
 You help with two things only:
   A) Searching cases in the database → use the searchCases tool.
   B) Answering questions about AeliusCase features and usage → use the User Guide excerpts below.
@@ -827,7 +851,8 @@ ${guideSection}
 • "What is AeliusCase", "how do I…", "what does X do", feature questions → answer from the User Guide excerpts above. Be helpful and specific. If the exact detail isn't in the excerpts, say you don't have that specific information from the guide.
 • Greetings → reply warmly in 1-2 sentences.
 • Questions completely unrelated to AeliusCase (world events, cooking, etc.) → reply: "I can only help with AeliusCase case searches and User Guide questions."
-• After a tool result → ONE short sentence only (e.g. "Found 12 open cases for Maria.").
+• After a tool result → ONE short sentence only, and NEVER state a specific case count number yourself (e.g. "Found 12 cases" or "there are 8 cases") — the result card above already shows the exact, reliable total, and you do not reliably know the true count from the tool output text. Say something generic instead, e.g. "Here are Maria's open cases." or "Here's what I found for Raj Patel."
+  EXCEPTION — if a "━━━ EXACT COUNT ━━━" block appears further below, the user explicitly asked HOW MANY and that block hands you the real, verified number: state THAT EXACT number and nothing else. Never use any other number, even if the tool output text shows a different-looking one.
   NEVER list case numbers, names, employers, or any case details in text — the UI renders them automatically.
   Do NOT repeat or describe what is already shown in the result cards.
 • If the user repeats a search (same or similar request), ALWAYS call the tool again — never say "I already showed that" or "you already asked that."
@@ -927,7 +952,11 @@ Rules for searchText:
 - Keep searchText SHORT — name, case number, or keyword only.
 
 searchType values:
-- 1 = All Cases  2 = Open only  3 = Closed only  4 = Sub-Out only (status "Sub-d Out" — NOT "Sub-d In")${bareNameDirective}${solYearDirective}${carriedFiltersSection}${partiesFollowUpDirective}${venueOfCaseDirective}`,
+- 1 = All Cases  2 = Open only  3 = Closed only  4 = Sub-Out only (status "Sub-d Out" — NOT "Sub-d In")${bareNameDirective}${solYearDirective}${carriedFiltersSection}${partiesFollowUpDirective}${venueOfCaseDirective}`;
+
+    result = streamText({
+    model: openai('gpt-4o-mini'),
+    system: systemPrompt,
     messages: modelMessages,
     stopWhen: stepCountIs(5),
     tools: selectedTools.tools,
@@ -940,16 +969,55 @@ searchType values:
     // FORCED, require that exact tool; otherwise require any of the offered
     // tools (lets the model still choose between the single-filter tool and
     // combinedSearch, e.g. when it detects a person's name).
-    ...(partiesFollowUpRef
-      ? { prepareStep: ({ stepNumber }: { stepNumber: number }) =>
-          stepNumber === 0 ? { toolChoice: { type: 'tool' as const, toolName: 'getCaseParties' } } : {} }
-      : selectedTools.forcedCombined
-      ? { prepareStep: ({ stepNumber }: { stepNumber: number }) =>
-          stepNumber === 0 ? { toolChoice: { type: 'tool' as const, toolName: 'combinedSearch' } } : {} }
-      : selectedTools.requireTool
-      ? { prepareStep: ({ stepNumber }: { stepNumber: number }) =>
-          stepNumber === 0 ? { toolChoice: 'required' as const } : {} }
-      : {}),
+    prepareStep: ({ stepNumber, steps }: {
+      stepNumber: number;
+      steps: Array<{ toolResults?: Array<{ output?: unknown }> }>;
+    }) => {
+      if (stepNumber === 0) {
+        const forcedToolName = partiesFollowUpRef
+          ? 'getCaseParties'
+          : selectedTools.forcedCombined ? 'combinedSearch' : null;
+        if (forcedToolName) return { toolChoice: { type: 'tool' as const, toolName: forcedToolName } };
+        if (selectedTools.requireTool) return { toolChoice: 'required' as const };
+        return {};
+      }
+      const lastStep = steps[steps.length - 1];
+      const lastToolResult = lastStep?.toolResults?.[lastStep.toolResults.length - 1];
+      const lastOutput = lastToolResult?.output as
+        { success?: boolean; totalRecords?: number; filterLabel?: string; cases?: unknown[] } | undefined;
+
+      // After the tool ran: for an explicit "how many" question, hand the model
+      // the REAL totalRecords so it states that exact number instead of guessing
+      // — live-verified 2026-07-16 to otherwise hallucinate (617 → "8") or omit
+      // it entirely for the identical query. The model never computes this
+      // number itself; it only ever copies the one injected here.
+      if (countQuestion) {
+        if (lastOutput?.success && typeof lastOutput.totalRecords === 'number') {
+          return {
+            system: `${systemPrompt}\n\n━━━ EXACT COUNT ━━━\nThe user explicitly asked HOW MANY. The verified real total is exactly ${lastOutput.totalRecords}${lastOutput.filterLabel ? ` (${lastOutput.filterLabel})` : ''}. State this EXACT number in your one-sentence reply. Never use any other number, even if other text in the tool output suggests a different one.`,
+          };
+        }
+        return {};
+      }
+
+      // For a LISTING result (searchCases/combinedSearch/getBy*/etc. — anything
+      // that returned a `cases` array, i.e. NOT getCaseParties, which legitimately
+      // needs to state specific facts about the one case it looked up) with at
+      // least one row: the base instruction to keep the reply to one generic
+      // sentence with no case details is stated once, far above this point in a
+      // long system prompt — live-verified 2026-07-16 across ~100 queries to be
+      // followed only ~75% of the time (attention dilution on a small model), the
+      // model otherwise re-lists the case numbers/names/dates the UI card already
+      // shows. Re-stating the exact rule right here, with a copy-paste template,
+      // right before the step that needs it, is what actually made the analogous
+      // count-question fix reliable — do the same thing here.
+      if (lastOutput?.success && Array.isArray(lastOutput.cases) && lastOutput.cases.length > 0) {
+        return {
+          system: `${systemPrompt}\n\n━━━ FINAL REPLY — MANDATORY FORMAT ━━━\nYou just retrieved a LIST of ${lastOutput.totalRecords ?? 'multiple'} case(s)${lastOutput.filterLabel ? ` (${lastOutput.filterLabel})` : ''}. The result card shown above your reply ALREADY displays every case number, name, employer, date, and status — do not repeat ANY of that. Your entire reply must be exactly ONE short generic sentence and nothing else, e.g. "Here are the ${lastOutput.filterLabel ?? 'matching'} cases." No list, no bullets, no numbers, no case details of any kind.`,
+        };
+      }
+      return {};
+    },
   });
   } catch (err) {
     console.error('[/api/chat] streamText threw:', err);

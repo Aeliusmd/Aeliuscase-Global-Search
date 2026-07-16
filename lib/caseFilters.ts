@@ -1,5 +1,6 @@
 import type { CaseSearchItem } from '@/types/case';
 import type { FilterToolOutput, NewCaseDTO, NestedCaseListData, StaffItem } from '@/types/caseFilters';
+import { fetchCaseStatusList, listCaseTypes, resolveStatusIds, suggestStatusLabels } from '@/lib/caseStatus';
 
 export const FILTER_PAGE_SIZE = 10;
 
@@ -408,6 +409,113 @@ async function fetchCombinedCasesSolFiltered(opts: {
   }
 }
 
+/**
+ * Filters by a detailed case-status LABEL (e.g. "Settled", "Sub-d Out",
+ * "Dismissed" — the categories on the backend's "Employee Workload" admin
+ * screen), not the simple Open/Closed/Sub-Out toggle. Live-verified 2026-07-16
+ * against that screen's per-status breakdown for a real staff member: the
+ * same label can have several different status IDs (legacy duplicate rows)
+ * and is scoped per case type, so a single id lookup silently undercounts.
+ * This resolves EVERY matching (caseTypeId, statusId) pair via the live
+ * GetCaseStatus table, queries each, and merges + paginates the results
+ * client-side — working for any firm's own status configuration, not just
+ * the one this was verified against.
+ */
+export async function fetchCasesByStatusLabel(opts: {
+  apiBaseUrl: string; jwtToken: string;
+  statusLabel: string;
+  baseBody: Record<string, unknown>; // everything EXCEPT caseTypeId/caseStatusId (staffId, subOutFilter, etc.)
+  page: number;
+  filterLabel: string;
+  /**
+   * The ORIGINAL CombinedFilters, encoded the same way the plain combined path
+   * does (encodeCombinedFilters) — NOT baseBody. Reusing that exact shape (which
+   * includes staffName, unlike the API request body) is what lets this result
+   * round-trip through the shared machinery built for filterType 'combined':
+   * the refinement carry-forward (which reads staffName to restore the staff/
+   * applicant signal on a follow-up) and the Next/Previous pagination proxy
+   * (whose switch has no separate case for a status-label result). filterType
+   * is deliberately reported as 'combined' here, not a distinct value, so both
+   * of those already work with zero extra wiring.
+   */
+  filterValue: string;
+}): Promise<FilterToolOutput> {
+  const { filterValue } = opts;
+  const fail = (error: string): FilterToolOutput => ({
+    success: false, filterType: 'combined', filterLabel: opts.filterLabel, filterValue,
+    cases: [], totalRecords: 0, totalPages: 0, hasMorePages: false, page: 1, error,
+  });
+
+  let entries;
+  try {
+    entries = await fetchCaseStatusList({ apiBaseUrl: opts.apiBaseUrl, jwtToken: opts.jwtToken });
+  } catch {
+    return fail('Could not load this firm\'s case-status list from the backend right now. Please try again.');
+  }
+
+  const explicitTypeId = typeof opts.baseBody.caseTypeId === 'number' ? (opts.baseBody.caseTypeId as number) : undefined;
+  const typeIds = explicitTypeId !== undefined ? [explicitTypeId] : listCaseTypes(entries).map((t) => t.caseTypeId);
+
+  // Every (caseTypeId, statusId) pair whose label matches — across all case
+  // types in scope AND every legacy duplicate id within each type.
+  const pairs: { caseTypeId: number; statusId: number }[] = [];
+  for (const typeId of typeIds) {
+    for (const statusId of resolveStatusIds(entries, opts.statusLabel, { caseTypeId: typeId })) {
+      pairs.push({ caseTypeId: typeId, statusId });
+    }
+  }
+
+  if (pairs.length === 0) {
+    const suggestions = suggestStatusLabels(entries, opts.statusLabel, { caseTypeId: explicitTypeId });
+    const hint = suggestions.length > 0 ? ` Did you mean: ${suggestions.join(', ')}?` : '';
+    return fail(`No case status called "${opts.statusLabel}" was found for this firm.${hint}`);
+  }
+
+  // Pull every candidate row per matched pair (small counts in practice — a
+  // single status slice of one staff member's caseload), then merge + paginate
+  // ourselves, since the true total spans several backend calls.
+  const PAGE_SIZE_PER_QUERY = 1000;
+  let allCases: NewCaseDTO[] = [];
+  for (const { caseTypeId, statusId } of pairs) {
+    const body = { ...opts.baseBody, caseTypeId, caseStatusId: statusId, page: 1, pageSize: PAGE_SIZE_PER_QUERY };
+    try {
+      const res = await fetch(`${opts.apiBaseUrl}/api/Case/GetCaseListCombined`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${opts.jwtToken}`,
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+        },
+        body: JSON.stringify(body),
+        cache: 'no-store',
+      });
+      if (!res.ok) continue;
+      const json = (await res.json()) as { succeeded?: boolean; data?: NestedCaseListData };
+      if (!json.succeeded) continue;
+      allCases = allCases.concat(json.data?.cases ?? []);
+    } catch {
+      // One pair failing shouldn't sink the whole merged result — skip it.
+      continue;
+    }
+  }
+
+  const seen = new Set<number>();
+  const unique = allCases.filter((c) => (seen.has(c.id) ? false : (seen.add(c.id), true)));
+
+  const totalRecords = unique.length;
+  const totalPages = Math.max(1, Math.ceil(totalRecords / FILTER_PAGE_SIZE));
+  const page = Math.min(Math.max(opts.page, 1), totalPages);
+  const start = (page - 1) * FILTER_PAGE_SIZE;
+  const pageRows = unique.slice(start, start + FILTER_PAGE_SIZE);
+
+  return {
+    success: true, filterType: 'combined', filterLabel: opts.filterLabel, filterValue,
+    cases: pageRows.map(mapNestedDTO),
+    totalRecords, totalPages,
+    hasMorePages: page < totalPages,
+    page,
+  };
+}
 
 /**
  * Resolve a person by name. Returns the matching staff list (one row per

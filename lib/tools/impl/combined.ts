@@ -54,7 +54,7 @@ export interface CombinedDeps {
 export function makeCombinedSearchTool(deps: CombinedDeps) {
   return tool({
     description:
-      'Search cases by MULTIPLE filters combined together (AND) in one request — e.g. "Open WCAB cases for Attorney Raj in Venue 5", "Personal Injury cases opened in 2024 with last name D", "WCAB cases for client John Smith". Use this whenever the user gives two or more filter criteria at once, OR a single filter together with a person\'s name. Map type names to IDs (1=WCAB,2=DUI,3=Personal Injury,4=WCAB Defense,5=Class Action,6=Civil,7=Employment,8=Immigration,9=Social Security). For a person: use staffName if they are a STAFF member (attorney/paralegal/coordinator/"handled by"/"assigned to"), or applicantName if they are the APPLICANT/CLIENT (injured worker). Never set both for the same person.',
+      'Search cases by MULTIPLE filters combined together (AND) in one request — e.g. "Open WCAB cases for Attorney Raj in Venue 5", "Personal Injury cases opened in 2024 with last name D", "WCAB cases for client John Smith". Use this whenever the user gives two or more filter criteria at once, OR a single filter together with a person\'s name. Map type names to IDs (1=WCAB,2=DUI,3=Personal Injury,4=WCAB Defense,5=Class Action,6=Civil,7=Employment,8=Immigration,9=Social Security). For a person: use staffName if they are a STAFF member (attorney/paralegal/coordinator/"handled by"/"assigned to"), or applicantName if they are the APPLICANT/CLIENT (injured worker). Never set both for the same person. Use caseStatusLabel for a DETAILED case-status word the user names — e.g. "Settled", "Sub-d Out", "Sub-d In", "Dismissed", "Dropped", "On Hold", "Re Opened", "Settlement Pending", "Inactive" — pass the exact word/phrase they used; this is looked up live and is DIFFERENT from `status` (the simple Open/Closed/Sub-Out toggle) — never set both for the same query.',
     inputSchema: zodSchema(
       z.object({
         caseTypeId: z.number().int().optional().describe('Main case type ID.'),
@@ -63,6 +63,7 @@ export function makeCombinedSearchTool(deps: CombinedDeps) {
         applicantName: z.string().optional().describe('APPLICANT/CLIENT (injured worker) name to filter by. Use when the person is the client the case is about, not a staff member.'),
         jobRole: z.string().optional().describe('Role the user named, used to disambiguate staff lookup.'),
         status: z.number().int().min(1).max(4).optional().describe('1=All, 2=Open, 3=Closed, 4=Sub-Out.'),
+        caseStatusLabel: z.string().optional().describe('A detailed case-status word the user named (e.g. "Settled", "Sub-d Out", "Dismissed", "Inactive"), resolved live per-firm. Different from `status`.'),
         lastNameInitial: z.string().optional().describe('Single A–Z letter (applicant last name).'),
         bodyPartIds: z.array(z.number().int()).optional(),
         solFromDate: z.string().optional(),
@@ -115,6 +116,7 @@ export function makeCombinedSearchTool(deps: CombinedDeps) {
         status: deps.enforcedSearchType && deps.enforcedSearchType !== 1
           ? deps.enforcedSearchType
           : num(i.status),
+        caseStatusLabel: allowed('caseStatusLabel') ? str(i.caseStatusLabel) : undefined,
         lastNameInitial: allowed('lastNameInitial') ? str(i.lastNameInitial) : undefined,
         bodyPartIds: allowed('bodyPartIds') ? arr(i.bodyPartIds) : undefined,
         solFromDate: allowed('solFromDate') ? (drSol?.from ?? str(i.solFromDate)) : undefined,

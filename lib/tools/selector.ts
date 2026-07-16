@@ -5,6 +5,9 @@ const INTENT_TOOLS: Record<IntentKey, string[]> = {
   case_search:        ['searchCases'],
   case_parties:       ['getCaseParties'],
   filter_status:      ['getByStatusId'],
+  // No dedicated single-filter tool — resolving a status LABEL to id(s) needs
+  // the live per-firm lookup only combinedSearch's engine does (see combined.ts).
+  filter_status_label: [],
   filter_sub_type:    ['getBySubTypeId'],
   filter_sub_status:  ['getBySubStatusId'],
   filter_sub_status2: ['getBySubStatusId2'],
@@ -36,7 +39,7 @@ export interface SelectedTools {
 }
 
 const FILTER_INTENTS = new Set<IntentKey>([
-  'filter_status', 'filter_sub_type', 'filter_sub_status', 'filter_sub_status2',
+  'filter_status', 'filter_status_label', 'filter_sub_type', 'filter_sub_status', 'filter_sub_status2',
   'filter_venue', 'filter_sol', 'filter_body_part', 'filter_special',
   'filter_case_date', 'filter_case_type', 'filter_last_name', 'filter_staff',
 ]);

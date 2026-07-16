@@ -16,7 +16,7 @@ export default function Home() {
   const [conversations, setConversations] = useState<ConversationMeta[]>([]);
   const [pendingNewId, setPendingNewId] = useState(generateId);
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [widgetView, setWidgetView] = useState<WidgetView>('closed');
+  const [widgetView, setWidgetView] = useState<WidgetView>('compact');
 
   // Load conversation list from DB on mount
   useEffect(() => {
@@ -112,10 +112,6 @@ export default function Home() {
     setSidebarOpen((v) => !v);
   }, []);
 
-  const handleToggleWidget = useCallback(() => {
-    setWidgetView((view) => (view === 'compact' ? 'closed' : 'compact'));
-  }, []);
-
   const handleCloseWidget = useCallback(() => {
     setWidgetView('closed');
     setSidebarOpen(false);
@@ -160,7 +156,7 @@ export default function Home() {
           className={
             isMaximized
               ? 'flex-1 min-w-0 h-full'
-              : 'fixed bottom-24 right-4 z-[9998] h-[min(680px,calc(100vh-7rem))] w-[min(420px,calc(100vw-2rem))] overflow-hidden rounded-lg border border-background-200 bg-background-50 shadow-2xl shadow-primary-900/20 sm:right-6'
+              : 'fixed bottom-4 right-4 z-[9998] h-[min(680px,calc(100vh-2rem))] w-[min(420px,calc(100vw-2rem))] overflow-hidden rounded-lg border border-background-200 bg-background-50 shadow-2xl shadow-primary-900/20 sm:bottom-6 sm:right-6'
           }
           aria-label="Aeliuscase AI chat"
         >
@@ -182,24 +178,6 @@ export default function Home() {
             onClose={handleCloseWidget}
           />
         </section>
-      )}
-
-      {!isMaximized && (
-        <button
-          type="button"
-          onClick={handleToggleWidget}
-          className="fixed bottom-5 right-4 z-[9999] flex h-16 w-16 items-center justify-center rounded-full text-white shadow-xl shadow-primary-900/25 transition-all duration-200 hover:-translate-y-0.5 hover:shadow-2xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-400 focus-visible:ring-offset-2 sm:right-6"
-          style={{ background: 'linear-gradient(135deg, #6763AC 0%, #3DC0EC 100%)' }}
-          aria-label={widgetView === 'compact' ? 'Close Aeliuscase AI chat' : 'Open Aeliuscase AI chat'}
-          aria-expanded={widgetView === 'compact'}
-        >
-          <span
-            className="absolute inset-0 rounded-full opacity-60"
-            style={{ boxShadow: '0 0 0 8px rgba(103,99,172,0.10)' }}
-            aria-hidden="true"
-          />
-          <i className={`${widgetView === 'compact' ? 'ri-close-line' : 'ri-chat-3-fill'} relative text-2xl`} />
-        </button>
       )}
     </div>
   );

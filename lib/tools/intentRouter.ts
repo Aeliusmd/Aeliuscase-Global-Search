@@ -2,6 +2,7 @@ export type IntentKey =
   | 'case_search'
   | 'case_parties'
   | 'filter_status'
+  | 'filter_status_label'
   | 'filter_sub_type'
   | 'filter_sub_status'
   | 'filter_sub_status2'
@@ -24,6 +25,13 @@ const RULES: [IntentKey, RegExp][] = [
   // e.g. "attorney on RP2476", "venue for case RP2010" (≠ "cases for attorney Raj").
   ['case_parties',       /\b(parties|party|contacts|who\s+is\s+on|documents\s+for|insurance\s+carrier)\b|\b(?:attorney|applicant|defendant|coordinator|venue|carrier|employer)\s+(?:on|for|assigned\s+to)\s+(?:case\s+)?[A-Za-z]{1,3}\d/i],
   ['filter_status',      /\bstatus\s*id\b|\bcaseStatusId\b/i],
+  // Detailed case-status LABEL (the "Employee Workload" screen's categories) —
+  // distinct from the simple Open/Closed/Sub-Out toggle. This regex is a
+  // starting-point heuristic built from labels verified live on this firm's
+  // data; the actual lookup (lib/caseStatus.ts) is fully dynamic per firm, so
+  // a firm with different label wording just won't trigger this fast-path
+  // (the model can still ask a clarifying question).
+  ['filter_status_label', /\bsettled\b|\bdismiss(?:ed)?\b|\bdropped\b|\bre[\s-]?opened\b|\breopen(?:ed)?\b|\bsettlement\s+pending\b|\binactive\b|\bsub[\s-]?d[\s-]?(?:out|in)\b|\bclosed\s+by\s+(?:c\s*&\s*r|stipulation)\b/i],
   ['filter_sub_status2', /\bsub[\s-]?status\s*2\b|\bcaseSubStatusId2\b/i],
   ['filter_sub_status',  /\bsub[\s-]?status\s*(id)?\b|\bcaseSubStatusId\b/i],
   ['filter_sub_type',    /\bsub[\s-]?type\s*(id)?\b|\bcaseSubTypeId\b/i],
