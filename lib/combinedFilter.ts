@@ -138,8 +138,14 @@ export async function combinedSearch(
   const body = buildCombinedRequestBody(filters);
   // Reject an empty combined call (no real filter — subOutFilter alone doesn't count),
   // so we never return the entire case list when the model calls the tool with nothing.
+  // caseStatusLabel is deliberately NOT one of `body`'s keys (see buildCombinedRequestBody
+  // above — it's resolved separately via fetchCasesByStatusLabel below), so it must be
+  // checked here explicitly too — otherwise a status-label-ONLY query (e.g. "dismissed
+  // cases", "settled cases") has zero keys in `body` and was wrongly rejected as if no
+  // filter had been given at all, live-verified 2026-07-19 (QA round 3) across every
+  // detailed status label.
   const filterKeys = Object.keys(body).filter((k) => k !== 'subOutFilter');
-  if (filterKeys.length === 0) {
+  if (filterKeys.length === 0 && !str(filters.caseStatusLabel)) {
     return fail('Please provide at least one concrete filter (name, type, venue, staff, dates, body part, etc.).');
   }
 

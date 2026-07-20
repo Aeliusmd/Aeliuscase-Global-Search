@@ -81,7 +81,7 @@ export function postChatViewChanged(view: EmbedView): void {
   }
 }
 
-/** Handshake so the parent can push auth token after the embed listener is ready. */
+/** Optional diagnostic signal; authentication does not use this message. */
 export function postReady(): void {
   if (typeof window === 'undefined' || window.parent === window) return;
 

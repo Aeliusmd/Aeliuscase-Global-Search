@@ -5,6 +5,8 @@ import { MainSearchType } from '@/types/case';
 import type { CaseSearchItem, PagedApiResponse } from '@/types/case';
 
 interface CaseResultListProps {
+  sessionId: string;
+  onSessionExpired: () => void;
   msgId: string;
   toolCallId: string;
   cases: CaseSearchItem[];
@@ -83,6 +85,8 @@ function StatusBadge({ status }: { status: string }) {
 // --- Main component ---
 
 export default function CaseResultList({
+  sessionId,
+  onSessionExpired,
   msgId: _msgId,
   toolCallId: _toolCallId,
   cases: initialCases,
@@ -128,7 +132,13 @@ export default function CaseResultList({
         url.searchParams.set('page', String(targetPage));
         url.searchParams.set('pageSize', String(PAGE_SIZE));
       }
-      const res = await fetch(url.toString());
+      const res = await fetch(url.toString(), {
+        headers: { 'X-Session-Id': sessionId },
+      });
+      if (res.status === 401) {
+        onSessionExpired();
+        return;
+      }
       const data = (await res.json()) as PagedApiResponse<CaseSearchItem>;
       if (!res.ok || !data.succeeded) return;
 

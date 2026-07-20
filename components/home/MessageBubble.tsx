@@ -52,6 +52,8 @@ export type OnLoadMore = (
 interface MessageBubbleProps {
   message: UIMessage;
   onLoadMore: OnLoadMore;
+  sessionId: string;
+  onSessionExpired: () => void;
 }
 
 // --- Markdown rendering helpers ---
@@ -184,7 +186,12 @@ function TextBlock({ text }: { text: string }) {
 
 // --- Main component ---
 
-export default function MessageBubble({ message, onLoadMore }: MessageBubbleProps) {
+export default function MessageBubble({
+  message,
+  onLoadMore,
+  sessionId,
+  onSessionExpired,
+}: MessageBubbleProps) {
   const [copied, setCopied] = useState(false);
   const isUser = message.role === 'user';
 
@@ -297,6 +304,8 @@ export default function MessageBubble({ message, onLoadMore }: MessageBubbleProp
               return (
                 <CaseResultList
                   key={`${message.id}-tr${idx}`}
+                  sessionId={sessionId}
+                  onSessionExpired={onSessionExpired}
                   msgId={message.id}
                   toolCallId={part.toolCallId}
                   cases={result.cases}
@@ -368,6 +377,8 @@ export default function MessageBubble({ message, onLoadMore }: MessageBubbleProp
               return (
                 <CaseResultList
                   key={`${message.id}-fr${idx}`}
+                  sessionId={sessionId}
+                  onSessionExpired={onSessionExpired}
                   msgId={message.id}
                   toolCallId={part.toolCallId}
                   cases={result.cases}

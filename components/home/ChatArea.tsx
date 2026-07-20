@@ -17,6 +17,7 @@ const SUGGESTION_CHIPS = [
 ];
 
 interface ChatAreaProps {
+  sessionId: string;
   conversationTitle: string;
   conversationId: string;
   isNew: boolean;
@@ -31,6 +32,7 @@ interface ChatAreaProps {
 }
 
 export default function ChatArea({
+  sessionId,
   conversationTitle,
   conversationId,
   isNew,
@@ -44,6 +46,7 @@ export default function ChatArea({
   onClose,
 }: ChatAreaProps) {
   const [hydrated, setHydrated] = useState(false);
+  const [sessionExpired, setSessionExpired] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const isWidget = variant === 'widget';
 
@@ -55,6 +58,12 @@ export default function ChatArea({
     () =>
       new DefaultChatTransport({
         api: '/api/chat',
+        headers: { 'X-Session-Id': sessionId },
+        fetch: async (input, init) => {
+          const response = await fetch(input, init);
+          if (response.status === 401) setSessionExpired(true);
+          return response;
+        },
         prepareSendMessagesRequest: ({ messages, body }) => ({
           body: {
             ...body,
@@ -72,8 +81,13 @@ export default function ChatArea({
   // Restore messages from DB on mount (existing sessions only)
   useEffect(() => {
     if (!isNew) {
-      fetch(`/api/conversations/${conversationId}`)
-        .then((r) => r.json())
+      fetch(`/api/conversations/${conversationId}`, {
+        headers: { 'X-Session-Id': sessionId },
+      })
+        .then((r) => {
+          if (r.status === 401) setSessionExpired(true);
+          return r.json();
+        })
         .then(({ data }: { data?: { messages?: UIMessage[] } }) => {
           const stored = data?.messages;
           if (Array.isArray(stored) && stored.length > 0) setMessages(stored);
@@ -91,9 +105,16 @@ export default function ChatArea({
     if (!hydrated || messages.length === 0 || status !== 'ready') return;
     fetch(`/api/conversations/${conversationId}`, {
       method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Session-Id': sessionId,
+      },
       body: JSON.stringify({ messages }),
-    }).catch(() => {});
+    })
+      .then((r) => {
+        if (r.status === 401) setSessionExpired(true);
+      })
+      .catch(() => {});
     // Bump this chat to the top of "Recent Searches" — every exchange counts
     // as activity, not just a brand-new chat's first message.
     onConversationActivity?.(conversationId);
@@ -128,10 +149,16 @@ export default function ChatArea({
 
     fetch('/api/chat/title', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Session-Id': sessionId,
+      },
       body: JSON.stringify({ userMessage: userText, aiResponse: aiText.slice(0, 500) }),
     })
-      .then((r) => r.json())
+      .then((r) => {
+        if (r.status === 401) setSessionExpired(true);
+        return r.json();
+      })
       .then(({ title }: { title: string | null }) => {
         if (title && onUpdateTitle) onUpdateTitle(conversationId, title);
       })
@@ -157,7 +184,13 @@ export default function ChatArea({
       url.searchParams.set('page', String(currentPage + 1));
       url.searchParams.set('pageSize', '10');
 
-      const response = await fetch(url.toString());
+      const response = await fetch(url.toString(), {
+        headers: { 'X-Session-Id': sessionId },
+      });
+      if (response.status === 401) {
+        setSessionExpired(true);
+        return;
+      }
       const data = (await response.json()) as PagedApiResponse<CaseSearchItem>;
       if (!response.ok || !data.succeeded) return;
 
@@ -187,7 +220,7 @@ export default function ChatArea({
         }),
       );
     },
-    [setMessages],
+    [sessionId, setMessages],
   );
 
   const showEmptyState = isNew && messages.length === 0;
@@ -289,7 +322,13 @@ export default function ChatArea({
       </div>
 
       {/* Body */}
-      {showEmptyState ? (
+      {sessionExpired ? (
+        <div className="flex flex-1 items-center justify-center px-6 text-center">
+          <p className="text-sm font-medium text-foreground-700">
+            Session expired — please refresh the page.
+          </p>
+        </div>
+      ) : showEmptyState ? (
         /* Empty / welcome state */
         <div
           className={
@@ -356,7 +395,13 @@ export default function ChatArea({
           )}
 
           {messages.map((message) => (
-            <MessageBubble key={message.id} message={message} onLoadMore={handleLoadMore} />
+            <MessageBubble
+              key={message.id}
+              message={message}
+              onLoadMore={handleLoadMore}
+              sessionId={sessionId}
+              onSessionExpired={() => setSessionExpired(true)}
+            />
           ))}
 
           {/* Typing indicator */}
@@ -387,7 +432,7 @@ export default function ChatArea({
       <div className="border-t border-background-200 bg-background-50 safe-bottom">
         <InputBar
           onSend={handleSend}
-          disabled={isLoading}
+          disabled={isLoading || sessionExpired}
           autoFocus={isWidget}
           showSuggestions={!isWidget}
         />

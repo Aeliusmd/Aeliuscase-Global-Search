@@ -16,6 +16,7 @@ import {
 } from './impl/filters';
 import { makeGetByStaffTool } from './impl/staff';
 import { makeCombinedSearchTool } from './impl/combined';
+import { makeGetCaseFullDetailTool, makeGetCaseTasksTool, makeGetCaseEventsTool, makeGetCaseDocumentsTool, makeGetCaseNotesTool, makeGetCaseActivitiesTool, makeGetCaseAccountingTool } from './impl/caseDetail';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export type AiTool = ReturnType<typeof makeSearchCasesTool> | ReturnType<typeof makeGetCasePartiesTool> | ReturnType<typeof makeGetByStatusIdTool> | any;
@@ -120,6 +121,34 @@ export function buildToolRegistry(deps: RegistryDeps): Map<string, ToolEntry> {
         ...fd, personSignal, personName, allowedFilterKeys, resolvedDateRange, enforcedSearchType, resolvedRoleSlot,
       }),
       intentTags: [],   // selected specially when 2+ filter intents are present
+    }],
+    ['getCaseFullDetail', {
+      definition: makeGetCaseFullDetailTool({ apiBaseUrl, jwtToken }),
+      intentTags: [],   // selected via lib/domains/caseDetail.ts, not intentRouter
+    }],
+    ['getCaseTasks', {
+      definition: makeGetCaseTasksTool({ apiBaseUrl, jwtToken }),
+      intentTags: [],   // selected via lib/domains/tasks.ts, not intentRouter
+    }],
+    ['getCaseEvents', {
+      definition: makeGetCaseEventsTool({ apiBaseUrl, jwtToken }),
+      intentTags: [],   // selected via lib/domains/events.ts, not intentRouter
+    }],
+    ['getCaseDocuments', {
+      definition: makeGetCaseDocumentsTool({ apiBaseUrl, jwtToken }),
+      intentTags: [],   // selected via lib/domains/documents.ts, not intentRouter
+    }],
+    ['getCaseNotes', {
+      definition: makeGetCaseNotesTool({ apiBaseUrl, jwtToken }),
+      intentTags: [],   // selected via lib/domains/notes.ts, not intentRouter
+    }],
+    ['getCaseActivities', {
+      definition: makeGetCaseActivitiesTool({ apiBaseUrl, jwtToken }),
+      intentTags: [],   // selected via lib/domains/activities.ts, not intentRouter
+    }],
+    ['getCaseAccounting', {
+      definition: makeGetCaseAccountingTool({ apiBaseUrl, jwtToken }),
+      intentTags: [],   // selected via lib/domains/accounting.ts, not intentRouter
     }],
   ]);
 }

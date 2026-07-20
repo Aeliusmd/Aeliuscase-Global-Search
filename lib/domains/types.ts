@@ -41,6 +41,14 @@ export interface DomainModule {
   label: string;
   /** Stage-1 detector — does this message belong to this domain? */
   match: RegExp;
+  /**
+   * One-line plain-English description of what this domain covers, used ONLY
+   * by the Stage-1.5 LLM fallback classifier (lib/domains/llmClassifier.ts) to
+   * build its prompt — never shown to the end user, never affects Stage-1
+   * regex matching. Falls back to `label` if omitted, so existing domains
+   * work unchanged; fill in for better LLM classification accuracy.
+   */
+  llmHint?: string;
   /** Stage-2 — the tools (+ flags) to expose for this domain this turn. */
   selectTools(ctx: DomainContext): DomainToolSelection;
 }

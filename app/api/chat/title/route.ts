@@ -1,7 +1,11 @@
 import { openai } from '@ai-sdk/openai';
 import { generateText } from 'ai';
+import { getRequestAuth } from '@/lib/auth/request';
 
 export async function POST(req: Request) {
+  if (!getRequestAuth(req)) {
+    return Response.json({ title: null }, { status: 401 });
+  }
   if (!process.env.OPENAI_API_KEY) {
     return Response.json({ title: null }, { status: 500 });
   }

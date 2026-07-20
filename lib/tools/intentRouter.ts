@@ -23,7 +23,25 @@ const RULES: [IntentKey, RegExp][] = [
   // ("who is the attorney/venue/applicant/carrier ON/FOR case X"). The
   // "<field> (on|for)" shape implies one specific case, not a list filter —
   // e.g. "attorney on RP2476", "venue for case RP2010" (≠ "cases for attorney Raj").
-  ['case_parties',       /\b(parties|party|contacts|who\s+is\s+on|documents\s+for|insurance\s+carrier)\b|\b(?:attorney|applicant|defendant|coordinator|venue|carrier|employer)\s+(?:on|for|assigned\s+to)\s+(?:case\s+)?[A-Za-z]{1,3}\d/i],
+  //
+  // The field-lookup half was originally an ADJACENT-token pattern (field word
+  // directly followed by "on/for/assigned to" then a case-NUMBER) — found live
+  // 2026-07-19 (QA round 2) to miss two realistic cases: (a) "insurance
+  // company" (only "insurance carrier" was recognized), and (b) any case-NAME
+  // reference ("the Smith vs Wallmart matter") plus any phrasing where words
+  // sit between the field word and the case reference ("who the attorney IS
+  // FOR the ... matter") — the adjacency requirement rejected both, even
+  // though every Phase-2 domain (lib/domains/*.ts) already handles case names
+  // and non-adjacent phrasing via two independent lookaheads. Rewritten to the
+  // same style: the field word and a case-reference (word "case", a
+  // case-number token, or "vs"/"v.") just need to BOTH appear anywhere in the
+  // message, not be adjacent.
+  ['case_parties', new RegExp(
+    String.raw`\b(?:parties|party|contacts?|who\s+is\s+on|documents\s+for|insurance\s+(?:carrier|company))\b` +
+      String.raw`|(?=.*\b(?:attorney|applicant|defendant|coordinator|venue|carrier|employer)\b)` +
+      String.raw`(?=.*(?:\bcase\b|\b[A-Za-z]{1,4}\d{3,}\b|\bvs\.?\b|\bv\.\s))`,
+    'i',
+  )],
   ['filter_status',      /\bstatus\s*id\b|\bcaseStatusId\b/i],
   // Detailed case-status LABEL (the "Employee Workload" screen's categories) —
   // distinct from the simple Open/Closed/Sub-Out toggle. This regex is a

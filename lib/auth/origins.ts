@@ -7,7 +7,18 @@ export function getAllowedParentOrigins(): string[] {
   return raw
     .split(',')
     .map((s) => s.trim())
-    .filter(Boolean);
+    .filter(Boolean)
+    .flatMap((value) => {
+      try {
+        const url = new URL(value);
+        return (url.protocol === 'https:' || url.protocol === 'http:')
+          && value === url.origin
+          ? [url.origin]
+          : [];
+      } catch {
+        return [];
+      }
+    });
 }
 
 const LOCALHOST_ORIGIN =

@@ -363,10 +363,7 @@ async function fetchCombinedCasesSolFiltered(opts: {
   const BATCH_SIZE = 1000;
 
   try {
-    let candidates: NewCaseDTO[] = [];
-    let backendTotal = Infinity;
-    let fetchPage = 1;
-    while (candidates.length < backendTotal && candidates.length < MAX_CANDIDATES) {
+    const fetchBatch = async (fetchPage: number) => {
       const res = await fetch(`${apiBaseUrl}/api/Case/GetCaseListCombined`, {
         method: 'POST',
         headers: {
@@ -377,16 +374,29 @@ async function fetchCombinedCasesSolFiltered(opts: {
         body: JSON.stringify({ ...body, page: fetchPage, pageSize: BATCH_SIZE }),
         cache: 'no-store',
       });
-      if (!res.ok) return fail(`API error ${res.status}`);
+      if (!res.ok) throw new Error(`API error ${res.status}`);
       const json = (await res.json()) as { succeeded?: boolean; message?: string; data?: NestedCaseListData };
-      if (!json.succeeded) return fail(json.message ?? 'Filter failed');
-      const d = json.data ?? {};
-      const batch = d.cases ?? [];
-      if (batch.length === 0) break;
-      candidates = candidates.concat(batch);
-      backendTotal = d.totalRecords ?? candidates.length;
-      fetchPage += 1;
-    }
+      if (!json.succeeded) throw new Error(json.message ?? 'Filter failed');
+      return json.data ?? {};
+    };
+
+    // The first request gives us the backend total. The remaining bounded
+    // candidate pages are independent, so fetch them concurrently to stay well
+    // inside the Vercel function timeout while preserving page order.
+    const first = await fetchBatch(1);
+    const backendTotal = first.totalRecords ?? first.cases?.length ?? 0;
+    const pageCount = Math.min(
+      Math.ceil(backendTotal / BATCH_SIZE),
+      Math.ceil(MAX_CANDIDATES / BATCH_SIZE),
+    );
+    const remaining = pageCount > 1
+      ? await Promise.all(
+          Array.from({ length: pageCount - 1 }, (_, index) => fetchBatch(index + 2)),
+        )
+      : [];
+    const candidates = [first, ...remaining]
+      .flatMap((batch) => batch.cases ?? [])
+      .slice(0, MAX_CANDIDATES);
 
     const trueMatches = candidates.filter((c) =>
       (c.injury ?? []).some((i) => dateInRange(i.statuteLimitation, solFrom, solTo)),

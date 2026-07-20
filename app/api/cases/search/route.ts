@@ -1,16 +1,23 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { PAGE_SIZE, searchCasesPaginated } from '@/lib/caseSearch';
+import { getRequestAuth } from '@/lib/auth/request';
+import { collectCaseNumbers, recordAudit } from '@/lib/audit';
 
 export async function GET(request: NextRequest) {
-  const jwtToken = process.env.JWT_TOKEN;
+  const auth = getRequestAuth(request);
   const apiBaseUrl = process.env.API_BASE_URL;
 
-  if (!jwtToken || !apiBaseUrl) {
+  if (!auth) {
+    return NextResponse.json(
+      { succeeded: false, message: 'Authentication required.', data: null },
+      { status: 401 },
+    );
+  }
+  if (!apiBaseUrl) {
     return NextResponse.json(
       {
         succeeded: false,
-        message:
-          'Server configuration error: JWT_TOKEN or API_BASE_URL is not set. Update .env.local and restart the server.',
+        message: 'Server configuration error: API_BASE_URL is not set.',
         data: null,
       },
       { status: 500 }
@@ -28,7 +35,7 @@ export async function GET(request: NextRequest) {
     // page with exact totals (the upstream's own paging metadata is unreliable).
     const result = await searchCasesPaginated({
       apiBaseUrl,
-      jwtToken,
+      jwtToken: auth.token,
       searchText,
       searchType,
       page,
@@ -41,6 +48,14 @@ export async function GET(request: NextRequest) {
         { status: result.status }
       );
     }
+
+    recordAudit({
+      userId: auth.userId,
+      query: searchText,
+      accessedCaseNumbers: collectCaseNumbers(result.cases),
+      toolCalled: 'cases.search.pagination',
+      ip: auth.ip,
+    });
 
     return NextResponse.json(
       {

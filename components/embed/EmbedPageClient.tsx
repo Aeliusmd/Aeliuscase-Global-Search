@@ -13,12 +13,17 @@ function generateId() {
   return `chat-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`;
 }
 
-export default function EmbedPageClient() {
+interface EmbedPageClientProps {
+  sessionId: string;
+}
+
+export default function EmbedPageClient({ sessionId }: EmbedPageClientProps) {
   const [activeId, setActiveId] = useState('');
   const [conversations, setConversations] = useState<ConversationMeta[]>([]);
   const [pendingNewId, setPendingNewId] = useState(generateId);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [view, setView] = useState<EmbedView>('compact');
+  const [sessionExpired, setSessionExpired] = useState(false);
 
   useEffect(() => {
     syncEmbedModeToUrl('compact');
@@ -35,8 +40,13 @@ export default function EmbedPageClient() {
   }, [view]);
 
   useEffect(() => {
-    fetch('/api/conversations')
-      .then((r) => r.json())
+    fetch('/api/conversations', {
+      headers: { 'X-Session-Id': sessionId },
+    })
+      .then((r) => {
+        if (r.status === 401) setSessionExpired(true);
+        return r.json();
+      })
       .then(({ data }: { data: Array<{ _id: string; title: string; preview: string; updatedAt: string; pinned?: boolean }> }) => {
         if (Array.isArray(data) && data.length > 0) {
           setConversations(
@@ -51,7 +61,7 @@ export default function EmbedPageClient() {
         }
       })
       .catch(() => {});
-  }, []);
+  }, [sessionId]);
 
   const isNew = activeId === '';
   const activeConv = conversations.find((c) => c.id === activeId);
@@ -91,11 +101,18 @@ export default function EmbedPageClient() {
       setActiveId(pendingNewId);
       fetch('/api/conversations', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Session-Id': sessionId,
+        },
         body: JSON.stringify({ id: pendingNewId, title, preview: title }),
-      }).catch(() => {});
+      })
+        .then((r) => {
+          if (r.status === 401) setSessionExpired(true);
+        })
+        .catch(() => {});
     },
-    [pendingNewId],
+    [pendingNewId, sessionId],
   );
 
   const handleConversationActivity = useCallback((id: string) => {
@@ -113,17 +130,31 @@ export default function EmbedPageClient() {
     );
     fetch(`/api/conversations/${id}`, {
       method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Session-Id': sessionId,
+      },
       body: JSON.stringify({ title }),
-    }).catch(() => {});
-  }, []);
+    })
+      .then((r) => {
+        if (r.status === 401) setSessionExpired(true);
+      })
+      .catch(() => {});
+  }, [sessionId]);
 
   const handleDeleteConversation = useCallback((id: string) => {
     setConversations((prev) => prev.filter((c) => c.id !== id));
     setActiveId((prev) => (prev === id ? '' : prev));
     setPendingNewId((prev) => (prev === id ? generateId() : prev));
-    fetch(`/api/conversations/${id}`, { method: 'DELETE' }).catch(() => {});
-  }, []);
+    fetch(`/api/conversations/${id}`, {
+      method: 'DELETE',
+      headers: { 'X-Session-Id': sessionId },
+    })
+      .then((r) => {
+        if (r.status === 401) setSessionExpired(true);
+      })
+      .catch(() => {});
+  }, [sessionId]);
 
   const handleToggleSidebar = useCallback(() => {
     setSidebarOpen((v) => !v);
@@ -169,6 +200,16 @@ export default function EmbedPageClient() {
     );
   }
 
+  if (sessionExpired) {
+    return (
+      <div className="flex h-full w-full items-center justify-center bg-background-50 px-6 text-center">
+        <p className="text-sm font-medium text-foreground-700">
+          Session expired — please refresh the page.
+        </p>
+      </div>
+    );
+  }
+
   return (
     <div
       className={`flex h-full w-full bg-transparent ${isMaximized ? 'overflow-hidden' : ''}`}
@@ -196,6 +237,7 @@ export default function EmbedPageClient() {
       >
         <ChatArea
           key={chatKey}
+          sessionId={sessionId}
           conversationTitle={isNew ? 'New Conversation' : conversationTitle}
           conversationId={chatKey}
           isNew={isNew}

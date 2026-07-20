@@ -15,12 +15,20 @@ import {
   fetchByStaffId,
 } from '@/lib/caseFilters';
 import { combinedSearch, type CombinedFilters } from '@/lib/combinedFilter';
+import { getRequestAuth } from '@/lib/auth/request';
+import { collectCaseNumbers, recordAudit } from '@/lib/audit';
 
 export async function GET(request: NextRequest) {
-  const jwtToken = process.env.JWT_TOKEN;
+  const auth = getRequestAuth(request);
   const apiBaseUrl = process.env.API_BASE_URL;
 
-  if (!jwtToken || !apiBaseUrl) {
+  if (!auth) {
+    return NextResponse.json(
+      { succeeded: false, message: 'Authentication required.', data: null },
+      { status: 401 },
+    );
+  }
+  if (!apiBaseUrl) {
     return NextResponse.json(
       { succeeded: false, message: 'Server configuration error.', data: null },
       { status: 500 },
@@ -31,7 +39,7 @@ export async function GET(request: NextRequest) {
   const filterType = searchParams.get('filterType') ?? '';
   const filterValue = searchParams.get('filterValue') ?? '';
   const page = Math.max(1, Number(searchParams.get('page') ?? '1') || 1);
-  const deps = { apiBaseUrl, jwtToken };
+  const deps = { apiBaseUrl, jwtToken: auth.token };
 
   let result;
   switch (filterType) {
@@ -105,6 +113,14 @@ export async function GET(request: NextRequest) {
       { status: 400 },
     );
   }
+
+  recordAudit({
+    userId: auth.userId,
+    query: `${filterType}:${filterValue}`,
+    accessedCaseNumbers: collectCaseNumbers(result.cases),
+    toolCalled: 'cases.filter.pagination',
+    ip: auth.ip,
+  });
 
   return NextResponse.json({
     page: result.page,

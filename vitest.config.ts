@@ -18,6 +18,7 @@ export default defineConfig({
       '@/lib/caseStatus': path.resolve(__dirname, './lib/caseStatus.ts'),
       '@/lib/combinedFilter': path.resolve(__dirname, './lib/combinedFilter.ts'),
       '@/lib/caseParties': path.resolve(__dirname, './lib/caseParties.ts'),
+      '@/lib/caseFullDetail': path.resolve(__dirname, './lib/caseFullDetail.ts'),
       '@/lib/bodyParts': path.resolve(__dirname, './lib/bodyParts.ts'),
       '@/lib/roleSlots': path.resolve(__dirname, './lib/roleSlots.ts'),
       '@/lib/tools': path.resolve(__dirname, './lib/tools'),

@@ -4,11 +4,13 @@ import type { UIMessage } from 'ai';
 import OpenAI from 'openai';
 import { classifyIntents, type IntentKey } from '@/lib/tools/intentRouter';
 import { buildToolRegistry } from '@/lib/tools/registry';
-import { detectDomains, selectToolsForDomains } from '@/lib/domains';
+import { resolveDomains, selectToolsForDomains, type DomainModule } from '@/lib/domains';
 import { formatTodayContext, parseDateRange } from '@/lib/dateRange';
 import { BODY_PART_IDS_TEXT } from '@/lib/bodyParts';
 import { resolveCaseVenueId } from '@/lib/caseParties';
 import { resolveRoleSlot, type RoleSlotResolution } from '@/lib/roleSlots';
+import { getRequestAuth } from '@/lib/auth/request';
+import { collectCaseNumbers, recordAudit } from '@/lib/audit';
 
 export const maxDuration = 30;
 
@@ -499,15 +501,18 @@ function trimToolOutputs(messages: UIMessage[]): UIMessage[] {
 }
 
 export async function POST(req: Request) {
-  const jwtToken = process.env.JWT_TOKEN;
+  const auth = getRequestAuth(req);
   const apiBaseUrl = process.env.API_BASE_URL;
 
-  console.log('[/api/chat] POST — jwt:', !!jwtToken, '| apiBase:', !!apiBaseUrl, '| openai:', !!process.env.OPENAI_API_KEY);
+  if (!auth) {
+    return Response.json({ error: 'Authentication required.' }, { status: 401 });
+  }
+  const jwtToken = auth.token;
 
-  if (!jwtToken || !apiBaseUrl) {
-    console.error('[/api/chat] Missing JWT_TOKEN or API_BASE_URL');
+  if (!apiBaseUrl) {
+    console.error('[/api/chat] Missing API_BASE_URL');
     return Response.json(
-      { error: 'Server configuration error: JWT_TOKEN or API_BASE_URL is not set.' },
+      { error: 'Server configuration error: API_BASE_URL is not set.' },
       { status: 500 },
     );
   }
@@ -615,13 +620,20 @@ export async function POST(req: Request) {
   let guideContext: string;
   let modelMessages: Awaited<ReturnType<typeof convertToModelMessages>>;
   let llmRefining = false;
+  let activeDomains: DomainModule[];
   try {
-    [guideContext, modelMessages, llmRefining] = await Promise.all([
+    [guideContext, modelMessages, llmRefining, activeDomains] = await Promise.all([
       fetchGuideContext(lastUserText),
       convertToModelMessages(trimToolOutputs(contextMessages)),
       needsLLMRefinementCheck
         ? isRefinementLLM(lastUserText, formatCarriedFilters(priorFilters.values))
         : Promise.resolve(false),
+      // Stage-1 (regex) + Stage-1.5 (LLM fallback, only when regex is empty or
+      // the message looksComplex()) domain routing — see lib/domains/index.ts's
+      // resolveDomains() doc comment for the same safety invariant as
+      // isRefinementLLM above: this only decides which tool MENU is exposed
+      // this turn, never which tool gets called.
+      resolveDomains(classifyText),
     ]);
   } catch (err) {
     console.error('[/api/chat] convertToModelMessages failed:', err);
@@ -790,10 +802,7 @@ Re-send every prior filter above (with the same values) plus the new one. Only d
 ‼️ THIS TURN — The user wants the cases in the SAME VENUE as the case they were viewing (${venueOfCaseRef}). That case's venue is venueId ${venueOfCaseId}. Call combinedSearch with venueId: ${venueOfCaseId} (plus any open/closed status they mention). Do NOT ask which venue — use ${venueOfCaseId}.`
     : '';
 
-  // Stage-1 domain routing (see lib/domains). Cases is the fallback domain, so
-  // this is always [casesDomain] today — behaviour is unchanged — but Phase-2
-  // resource domains (Tasks/Events/…) slot in here with no other route edits.
-  const activeDomains = detectDomains(classifyText);
+  // activeDomains was resolved earlier (folded into the Promise.all above via resolveDomains()).
   let selectedTools: ReturnType<typeof selectToolsForDomains>;
   if (bareName || solNeedsYear) {
     selectedTools = { tools: {}, activeTools: [], forcedCombined: false, requireTool: false };
@@ -830,6 +839,8 @@ Re-send every prior filter above (with the same values) plus the new one. Only d
   }
 
   let result;
+  const auditedTools = new Set<string>();
+  const auditedCaseNumbers = new Set<string>();
   try {
     const systemPrompt = `You are a smart assistant for Aeliuscase, a law firm case management platform.
 You help with two things only:
@@ -842,6 +853,7 @@ ${guideSection}
 • Case search (find/show/look up cases — NOT when the user is asking about parties, contacts, or documents for a case) → call searchCases immediately. Never skip this. (EXCEPTION: the ambiguous bare-name rule below.)
 • CLIENT / APPLICANT NAMED EXPLICITLY — if the user says the person is a "client", "applicant", "claimant", or "injured worker" (e.g. "cases for client Martinez", "a client named Martinez", "applicant Serrato") → that is NOT ambiguous. Call searchCases({ searchText: "[Name]" }) directly (or combinedSearch with applicantName if other filters are present). Do NOT ask the staff-or-client question.
 • STAFF NAMED EXPLICITLY — if a role word (attorney/paralegal/coordinator/…) or "handled by"/"assigned to" is present → call getByStaff({ name: "[Name]", jobRole? }) directly (or combinedSearch with staffName). Do NOT ask.
+  EXCEPTION — if the name in the message is part of a CASE name ("[Name] vs [Company]", "[Name] v. [Company]") rather than a bare staff name, that is NOT a staff search — the person named is the case's applicant, not a staff member. Call getCaseFullDetail with that caseName instead (or getCaseParties if a case number/ID is also given) and read the attorney/paralegal/coordinator field from the result.
 • AMBIGUOUS BARE NAME — ONLY when the user gives a bare PERSON'S NAME with NO client/applicant/claimant word AND NO role word AND NO "handled by"/"assigned to"/"staff member", AND it's not already established:
   → Do NOT call any tool yet. Reply with exactly: "Is [Name] a staff member (e.g. attorney, paralegal) or an applicant/client? I'll search the right way once you let me know."
   → On the user's clarification, if the request was JUST the name (no other filters): staff/attorney/paralegal/coordinator/"handled by" → call getByStaff({ name: "[Name]" }); applicant/client/claimant → call searchCases({ searchText: "[Name]" }).
@@ -900,6 +912,54 @@ For ALL filter tools: if the required ID or value is missing from the user's mes
 • A SINGLE filter criterion with NO status word and NO person name → use that filter's individual tool (not combinedSearch).
 • A single filter criterion TOGETHER WITH an open/closed/sub-out status (e.g. "Open WCAB cases", "closed cases in venue 5") → call combinedSearch with that filter + status (the single filter tools cannot filter status).
 • If combinedSearch reports multiple staff matches, relay the question — ask which person.
+
+━━━ CASE FULL DETAIL (venue, injury/body parts, SOL, DOI, ADJ#, demographics) ━━━
+• If the user asks for venue, injury/body-part details, statute of limitations (SOL), date of injury (DOI), ADJ number, or general demographics for ONE specific case (by case number, case ID, or case name) → call getCaseFullDetail.
+• If the result has ambiguous: true, the case NAME matched more than one case — list the candidate case numbers/names from candidates and ask the user which one they mean. Do NOT guess or pick one yourself.
+• Treat "not set" / null values in the result as genuinely missing information — say so plainly, do not invent a value.
+• This is a single-case lookup, not a list search — never call combinedSearch or searchCases for these questions.
+
+━━━ CASE TASKS (due, overdue, assigned, category, status) ━━━
+• If the user asks what tasks/to-dos are due, overdue, or assigned on ONE specific case → call getCaseTasks.
+• If the result has ambiguous: true, list the candidates and ask the user which case they mean — same as getCaseFullDetail.
+• An empty tasks list means the case genuinely has no open tasks — say so plainly, do not invent one.
+• This is a single-case lookup, not a list search — never call combinedSearch or searchCases for these questions.
+
+━━━ CASE EVENTS (hearings, calendar) ━━━
+• If the user asks about hearings, events, or calendar entries on ONE specific case (e.g. "when's the next hearing on RP003583") → call getCaseEvents.
+• If the result has ambiguous: true, list the candidates and ask the user which case they mean — same as getCaseFullDetail.
+• The result includes both past AND future events — pick the one relevant to "next"/"upcoming" (future) or "last"/"most recent" (past) by comparing to today's date.
+• An empty events list means the case genuinely has no events on file — say so plainly, do not invent one.
+• This is a single-case lookup, not a list search — never call combinedSearch or searchCases for these questions.
+
+━━━ CASE DOCUMENTS (uploaded files) ━━━
+• If the user asks whether a document has been uploaded, who uploaded it, or wants to list documents on ONE specific case → call getCaseDocuments.
+• If the request is instead about PARTY-level documents (documents attached to a specific party/contact) → prefer getCaseParties instead, which already returns party-linked documents.
+• If the result has ambiguous: true, list the candidates and ask the user which case they mean — same as getCaseFullDetail.
+• "Has X been uploaded?" / "show settlement-related documents" — match by keyword against name/category yourself; there is no server-side search param.
+• An empty documents list means the case genuinely has no documents on file — say so plainly, do not invent one.
+• This is a single-case lookup, not a list search — never call combinedSearch or searchCases for these questions.
+
+━━━ CASE NOTES ━━━
+• If the user asks for notes on ONE specific case (e.g. "give me all settlement notes on RP003583", "what notes mention Matrix") → call getCaseNotes.
+• "Settlement notes" / "what notes mention X" — match by keyword against subject/text/category yourself; there is no server-side search param.
+• If the result has ambiguous: true, list the candidates and ask the user which case they mean — same as getCaseFullDetail.
+• An empty notes list means the case genuinely has no notes on file — say so plainly, do not invent one.
+• This is a single-case lookup, not a list search — never call combinedSearch or searchCases for these questions.
+
+━━━ CASE ACTIVITIES (audit/history) ━━━
+• If the user asks for the activity/audit history on ONE specific case (e.g. "5 most recent activities on RP003583", "when was the demographics sent on this case") → call getCaseActivities.
+• The result is sorted most-recent-first — "5 most recent" is a client-side take of the first 5, no server-side param needed.
+• If the result has ambiguous: true, list the candidates and ask the user which case they mean — same as getCaseFullDetail.
+• An empty activities list means the case genuinely has no activity history on file — say so plainly, do not invent one.
+• This is a single-case lookup, not a list search — never call combinedSearch or searchCases for these questions.
+
+━━━ CASE ACCOUNTING (financial — cheque requests, payments, settlement fees) ━━━
+• If the user asks about cheque requests, payments, client costs, settlement fees, or balances on ONE specific case → call getCaseAccounting.
+• If the result has ambiguous: true, list the candidates and ask the user which case they mean — same as getCaseFullDetail.
+• All amounts returned are exactly as stored — never estimate, round, or invent a figure yourself.
+• Empty accounting arrays mean the case genuinely has no financial records of that type on file — say so plainly, do not invent one.
+• This is a single-case lookup, not a list search — never call combinedSearch or searchCases for these questions.
 
 Do NOT answer general knowledge questions about the world, technology trends, or anything outside AeliusCase.
 
@@ -961,6 +1021,24 @@ searchType values:
     stopWhen: stepCountIs(5),
     tools: selectedTools.tools,
     activeTools: selectedTools.activeTools,
+    onStepFinish: ({ toolCalls, toolResults }) => {
+      for (const call of toolCalls) auditedTools.add(call.toolName);
+      for (const toolResult of toolResults) {
+        for (const caseNumber of collectCaseNumbers(toolResult.output)) {
+          auditedCaseNumbers.add(caseNumber);
+        }
+      }
+    },
+    onFinish: () => {
+      if (auditedTools.size === 0) return;
+      recordAudit({
+        userId: auth.userId,
+        query: lastUserText,
+        accessedCaseNumbers: [...auditedCaseNumbers],
+        toolCalled: [...auditedTools].join(','),
+        ip: auth.ip,
+      });
+    },
     // A concrete filter intent fired (forced-combined or merely offered) —
     // gpt-4o-mini sometimes narrates ("I'll search for...") instead of calling
     // the tool, so require a call on the first step only (forcing every step
@@ -971,7 +1049,10 @@ searchType values:
     // combinedSearch, e.g. when it detects a person's name).
     prepareStep: ({ stepNumber, steps }: {
       stepNumber: number;
-      steps: Array<{ toolResults?: Array<{ output?: unknown }> }>;
+      steps: Array<{
+        toolCalls?: Array<{ toolName: string; input: unknown }>;
+        toolResults?: Array<{ output?: unknown }>;
+      }>;
     }) => {
       if (stepNumber === 0) {
         const forcedToolName = partiesFollowUpRef
@@ -981,6 +1062,36 @@ searchType values:
         if (selectedTools.requireTool) return { toolChoice: 'required' as const };
         return {};
       }
+
+      // Stuck-loop guard: gpt-4o-mini can keep calling the SAME tool with
+      // IDENTICAL input instead of ever answering — live-verified 2026-07-19
+      // (QA round 3, real end-to-end testing) with a multi-part question that
+      // offered several case-scoped Phase-2 tools at once (tasks + documents +
+      // notes + caseDetail, all correctly exposed): the model fixated on
+      // getCaseParties, called it repeatedly (15 times across steps/parallel
+      // calls), and exhausted stopWhen: stepCountIs(5) with a completely BLANK
+      // final reply (finishReason "tool-calls", never "stop") — the worst
+      // possible outcome for the user. This is a generic step-loop safeguard
+      // (not scoped to any one tool or domain): if the current step repeats a
+      // toolName+input pair already seen (either duplicated within one step's
+      // parallel calls, or identical to the immediately preceding step), force
+      // toolChoice: 'none' so the model MUST answer in text using whatever
+      // results it already has, instead of looping again.
+      const callSignatures = (calls?: Array<{ toolName: string; input: unknown }>) =>
+        (calls ?? []).map((tc) => `${tc.toolName}:${JSON.stringify(tc.input)}`);
+      const currentCalls = callSignatures(steps[steps.length - 1]?.toolCalls);
+      const priorCalls = steps.length >= 2 ? callSignatures(steps[steps.length - 2]?.toolCalls) : [];
+      const isStuckLoop = currentCalls.length > 0 && (
+        new Set(currentCalls).size < currentCalls.length
+        || currentCalls.every((sig) => priorCalls.includes(sig))
+      );
+      if (isStuckLoop) {
+        return {
+          toolChoice: 'none' as const,
+          system: `${systemPrompt}\n\n━━━ STOP — ANSWER NOW ━━━\nYou just called the same tool with the same input again instead of answering. Do NOT call any more tools. Using ONLY the results you already have from earlier tool calls in this turn, answer the user's question as completely as you can right now — if part of it is missing, say so instead of repeating a tool call.`,
+        };
+      }
+
       const lastStep = steps[steps.length - 1];
       const lastToolResult = lastStep?.toolResults?.[lastStep.toolResults.length - 1];
       const lastOutput = lastToolResult?.output as

@@ -2,6 +2,7 @@ import type { UIMessage } from 'ai';
 
 export interface ConversationDoc {
   _id: string;
+  userId: string;
   title: string;
   preview: string;
   pinned: boolean;
