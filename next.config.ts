@@ -17,7 +17,10 @@ const nextConfig: NextConfig = {
   // NOTE: @ai-sdk/react must NOT be external — it's a client package whose hooks
   // (useChat) run during SSR. Externalizing it loads a second React module
   // instance with a null dispatcher, breaking useRef/useState inside the hook.
-  serverExternalPackages: ['ai', '@ai-sdk/openai'],
+  // mongodb is excluded too: webpack otherwise tries to statically resolve its
+  // OPTIONAL peer deps (gcp-metadata, snappy, socks, mongodb-client-encryption —
+  // none of which this app uses) and logs "Module not found" build warnings.
+  serverExternalPackages: ['ai', '@ai-sdk/openai', 'mongodb'],
   async headers() {
     return [
       {

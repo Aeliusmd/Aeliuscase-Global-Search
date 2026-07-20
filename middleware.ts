@@ -9,6 +9,12 @@ import {
 } from '@/lib/auth/request';
 import { limitChatRequest } from '@/lib/rateLimit';
 
+// Middleware defaults to the Edge runtime, which cannot run the Node.js
+// MongoDB driver used by getSession()/limitChatRequest() (via lib/mongodb.ts —
+// real TCP sockets, not available in Edge's sandboxed runtime). Node.js
+// middleware is stable as of Next.js 15.5 (confirmed installed version).
+export const runtime = 'nodejs';
+
 function unauthorized(): NextResponse {
   return NextResponse.json(
     { success: false, error: 'Authentication required or session expired.' },
