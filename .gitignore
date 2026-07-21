@@ -76,3 +76,4 @@ docs/*
 # Local screenshots and HTML exports — kept local only
 *.png
 *.html
+docs/uat-integration.md

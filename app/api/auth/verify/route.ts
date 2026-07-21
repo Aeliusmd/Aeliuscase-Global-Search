@@ -11,14 +11,19 @@ export const runtime = 'nodejs';
 
 const MAX_ENVELOPE_LENGTH = 20_000;
 
-function corsHeaders(origin: string): HeadersInit {
+function corsHeaders(origin: string, requestedHeaders?: string | null): HeadersInit {
   return {
     'Access-Control-Allow-Origin': origin,
     'Access-Control-Allow-Methods': 'POST, DELETE, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type',
+    // Echo back whatever headers the browser's preflight actually asked for
+    // (Access-Control-Request-Headers) instead of a hard-coded list — some
+    // XHR/fetch polyfills add extra headers (e.g. X-Requested-With) that a
+    // fixed 'Content-Type'-only allowlist would silently reject, failing the
+    // whole preflight with a CORS error even though the origin is allowed.
+    'Access-Control-Allow-Headers': requestedHeaders || 'Content-Type',
     'Access-Control-Allow-Credentials': 'false',
     'Cache-Control': 'no-store',
-    Vary: 'Origin',
+    Vary: 'Origin, Access-Control-Request-Headers',
   };
 }
 
@@ -38,7 +43,8 @@ function json(
 export function OPTIONS(req: Request): Response {
   const origin = allowedOrigin(req);
   if (!origin) return Response.json({ success: false, error: 'Origin not allowed.' }, { status: 403 });
-  return new Response(null, { status: 204, headers: corsHeaders(origin) });
+  const requestedHeaders = req.headers.get('access-control-request-headers');
+  return new Response(null, { status: 204, headers: corsHeaders(origin, requestedHeaders) });
 }
 
 export async function POST(req: Request): Promise<Response> {

@@ -13,8 +13,8 @@ to the iframe with `postMessage`.
    `sessionId` and a fresh envelope.
 5. On logout, delete the session and remove the iframe.
 
-The renewal call updates Redis in place. Do not reload the iframe, change its
-`src`, or send it a token during renewal.
+The renewal call updates the chatbot's session record in place. Do not reload
+the iframe, change its `src`, or send it a token during renewal.
 
 ```javascript
 const CHAT_ORIGIN = 'https://YOUR-CHATBOT.vercel.app';

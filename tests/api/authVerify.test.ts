@@ -24,7 +24,7 @@ vi.mock('@/lib/auth/origins', () => ({
   isAllowedOrigin: (origin: string) => origin === 'https://uat.aeliuscase.com',
 }));
 
-import { POST } from '@/app/api/auth/verify/route';
+import { OPTIONS, POST } from '@/app/api/auth/verify/route';
 
 const sessionId = 'a'.repeat(64);
 const allowedOrigin = 'https://uat.aeliuscase.com';
@@ -83,6 +83,34 @@ describe('POST /api/auth/verify', () => {
     );
     expect(body.sessionId).toBe(sessionId);
     expect(authMocks.createSession).not.toHaveBeenCalled();
+  });
+
+  it('echoes back whatever headers the preflight actually requested', async () => {
+    // Live-reproduced bug (2026-07-21): a hard-coded 'Content-Type'-only
+    // Access-Control-Allow-Headers made the browser reject the whole
+    // preflight whenever the caller's fetch/XHR layer (e.g. a polyfill)
+    // added an extra header like X-Requested-With — surfacing as a plain
+    // "CORS error" in the Network tab even though the origin was allowed.
+    const response = OPTIONS(new Request('http://localhost/api/auth/verify', {
+      method: 'OPTIONS',
+      headers: {
+        Origin: allowedOrigin,
+        'Access-Control-Request-Method': 'POST',
+        'Access-Control-Request-Headers': 'content-type, x-requested-with',
+      },
+    }));
+
+    expect(response.status).toBe(204);
+    expect(response.headers.get('Access-Control-Allow-Headers')).toBe('content-type, x-requested-with');
+  });
+
+  it('falls back to Content-Type when no Access-Control-Request-Headers is sent', async () => {
+    const response = OPTIONS(new Request('http://localhost/api/auth/verify', {
+      method: 'OPTIONS',
+      headers: { Origin: allowedOrigin, 'Access-Control-Request-Method': 'POST' },
+    }));
+
+    expect(response.headers.get('Access-Control-Allow-Headers')).toBe('Content-Type');
   });
 
   it('denies a request from an origin outside the allowlist', async () => {
