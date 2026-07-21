@@ -1,6 +1,6 @@
 // @vitest-environment node
 
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { generateKeyPairSync } from 'node:crypto';
 import { exportPKCS8, SignJWT } from 'jose';
 
@@ -69,6 +69,34 @@ describe('verifyEnvelope', () => {
       .sign(privateKey);
 
     await expect(verifyEnvelope(envelope)).rejects.toThrow('Invalid or expired envelope.');
+  });
+
+  it('verifies correctly when the env var stores the PEM as one continuous line with no newlines', async () => {
+    // Live bug (2026-07-21): .env.local / Vercel commonly store a PEM value as
+    // a single unbroken line (no real newlines, no "\n" escapes either) — Node's
+    // PEM decoder throws ERR_OSSL_UNSUPPORTED on that shape even for a perfectly
+    // valid key. Reproduced with a freshly generated key to confirm it wasn't a
+    // corrupted key on the signing side, then fixed via normalizePem() in
+    // lib/auth/envelope.ts. This test pins that exact real-world storage shape,
+    // which the other tests in this file (multi-line exportPKCS8 output) don't
+    // exercise.
+    const multiLinePem = process.env.AI_SEARCH_PRIVATE_KEY_PEM;
+    vi.resetModules();
+    process.env.AI_SEARCH_PRIVATE_KEY_PEM = (await exportPKCS8(privateKey)).replace(/\n/g, '');
+
+    try {
+      const { verifyEnvelope } = await import('@/lib/auth/envelope');
+      await expect(verifyEnvelope(await validEnvelope())).resolves.toMatchObject({
+        token: 'upstream-user-token',
+        firmId: 'firm-1',
+        userId: 'user-1',
+      });
+    } finally {
+      // Restore so later tests in this file (which re-import the module) get
+      // the original multi-line key, not this test's single-line variant.
+      process.env.AI_SEARCH_PRIVATE_KEY_PEM = multiLinePem;
+      vi.resetModules();
+    }
   });
 
   it('rejects an expired envelope', async () => {

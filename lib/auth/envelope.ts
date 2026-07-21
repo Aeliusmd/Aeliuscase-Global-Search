@@ -17,6 +17,30 @@ export class EnvelopeVerificationError extends Error {
 
 let verificationKey: KeyObject | undefined;
 
+/**
+ * Reconstructs a properly line-wrapped PEM from whatever shape the env var
+ * happens to store — literal "\n" escapes, real newlines already, or (the
+ * case that was silently breaking every verification) one continuous line
+ * with no newlines at all. Node's PEM decoder requires the base64 body to be
+ * line-wrapped; a single unbroken line throws ERR_OSSL_UNSUPPORTED even for a
+ * perfectly valid key, which is why every envelope was failing regardless of
+ * its own content (confirmed 2026-07-21 — a freshly generated key reproduced
+ * the identical failure once squished onto one line, ruling out a corrupted
+ * key on the signing side).
+ */
+function normalizePem(pem: string): string {
+  const withRealNewlines = pem.replace(/\\n/g, '\n');
+  if (withRealNewlines.includes('\n')) return withRealNewlines;
+
+  const match = withRealNewlines.match(/-----BEGIN ([A-Z0-9 ]+)-----(.*)-----END \1-----/);
+  if (!match) return withRealNewlines;
+
+  const [, label, rawBody] = match;
+  const body = rawBody.replace(/\s+/g, '');
+  const wrapped = body.match(/.{1,64}/g)?.join('\n') ?? body;
+  return `-----BEGIN ${label}-----\n${wrapped}\n-----END ${label}-----\n`;
+}
+
 function getVerificationKey(): KeyObject {
   if (verificationKey) return verificationKey;
 
@@ -25,9 +49,8 @@ function getVerificationKey(): KeyObject {
     throw new Error('AI_SEARCH_PRIVATE_KEY_PEM is not configured.');
   }
 
-  // Vercel and local env files commonly store PEM newlines as the two
-  // characters "\n". Normalize in memory only; never log the key material.
-  const privateKey = createPrivateKey(privateKeyPem.replace(/\\n/g, '\n'));
+  // Normalize in memory only; never log the key material.
+  const privateKey = createPrivateKey(normalizePem(privateKeyPem));
   verificationKey = createPublicKey(privateKey);
   return verificationKey;
 }
