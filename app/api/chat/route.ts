@@ -241,6 +241,14 @@ function detectBarePersonName(text: string): string | null {
     // ("last month") phrasings, since a trailing digit breaks the name capture.
     'last', 'next', 'past', 'previous', 'day', 'days', 'week', 'weeks',
     'month', 'months', 'year', 'years',
+    // Common prepositions — live-reproduced bug (2026-07-21): "cases for the
+    // MONTH OF July" captures "the month of" (capped at 3 words before hitting
+    // "July"), "the" gets peeled by LEAD, leaving "month of". "month" alone was
+    // already a stop word, but the all-words-are-stopwords bailout still let it
+    // through because "of" wasn't — the model then asked "Is month of a staff
+    // member...?". No real person's name is composed only of prepositions, so
+    // these are safe to add without risking a false negative on an actual name.
+    'of', 'in', 'on', 'at', 'to', 'by', 'from', 'with',
   ]);
   // Leading filler verbs/pronouns to peel off the front of a capture, and
   // trailing connectors to trim from the end, so we keep just the name.
