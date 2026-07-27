@@ -11,22 +11,40 @@ beforeEach(() => {
   vi.mocked(classifyDomainsLLM).mockReset();
 });
 
-describe('resolveDomains — regex short-circuit (zero LLM cost for the common case)', () => {
-  it('does NOT call the LLM classifier when a short, simple message matches a specific domain via regex', async () => {
+describe('resolveDomains — always double-checks via the LLM classifier', () => {
+  // Changed 2026-07-27: the old "only call the LLM when a heuristic guesses a
+  // gap exists" design meant every regex miss this session ALSO had to be a
+  // heuristic miss to ever get noticed (e.g. "demographics sent" matched
+  // casesDomain via the bare word "case", so even the zero-hits gate never
+  // considered double-checking it). Calling the classifier unconditionally
+  // removes that whole failure mode — merge-only semantics (see resolveDomains'
+  // doc comment) make it safe to always ask.
+  beforeEach(() => {
+    vi.mocked(classifyDomainsLLM).mockResolvedValue([]);
+  });
+
+  it('calls the LLM classifier even when a short, simple message matches a specific domain via regex', async () => {
     const domains = await resolveDomains('what tasks are due on case RP003583');
     expect(domains.some((d) => d.key === 'tasks')).toBe(true);
-    expect(classifyDomainsLLM).not.toHaveBeenCalled();
+    expect(classifyDomainsLLM).toHaveBeenCalledWith('what tasks are due on case RP003583', DOMAINS);
   });
 
-  it('does NOT call the LLM classifier for a short, plain Cases query with no case reference', async () => {
+  it('calls the LLM classifier for a short, plain Cases query with no case reference', async () => {
     const domains = await resolveDomains('find cases for Maria');
     expect(domains.some((d) => d.key === 'cases')).toBe(true);
-    expect(classifyDomainsLLM).not.toHaveBeenCalled();
+    expect(classifyDomainsLLM).toHaveBeenCalled();
   });
 
-  it('does NOT call the LLM classifier for a short single-topic domain query', async () => {
+  it('calls the LLM classifier for a short single-topic domain query', async () => {
     await resolveDomains('show me the notes on RP003583');
-    expect(classifyDomainsLLM).not.toHaveBeenCalled();
+    expect(classifyDomainsLLM).toHaveBeenCalled();
+  });
+
+  it('still merges in whatever the LLM finds even when regex already matched cleanly', async () => {
+    vi.mocked(classifyDomainsLLM).mockResolvedValueOnce(['activities']);
+    const domains = await resolveDomains('what tasks are due on case RP003583');
+    expect(domains.some((d) => d.key === 'tasks')).toBe(true);
+    expect(domains.some((d) => d.key === 'activities')).toBe(true);
   });
 });
 
@@ -71,7 +89,7 @@ describe('resolveDomains — zero regex hits at all (not even casesDomain)', () 
   });
 });
 
-describe('resolveDomains — looksComplex double-check when a Phase-2 domain already matched (merge, never replace)', () => {
+describe('resolveDomains — multi-topic messages merge, never replace, when a Phase-2 domain already matched', () => {
   // "who touched this case" deliberately does NOT contain any Phase-2
   // domain's own trigger words (not "activity"/"audit"/"history"/"sent") — a
   // genuine regex miss for the second topic. (An earlier version of this test
@@ -94,7 +112,7 @@ describe('resolveDomains — looksComplex double-check when a Phase-2 domain alr
     expect(domains.some((d) => d.key === 'tasks')).toBe(true);
   });
 
-  it('double-checks a short message with multiple case-reference tokens even without a conjunction', async () => {
+  it('double-checks a short message with multiple case-reference tokens', async () => {
     vi.mocked(classifyDomainsLLM).mockResolvedValueOnce([]);
     await resolveDomains('compare tasks on RP003583 RP2134');
     expect(classifyDomainsLLM).toHaveBeenCalled();

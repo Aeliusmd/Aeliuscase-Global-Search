@@ -47,68 +47,31 @@ export function detectDomains(message: string): DomainModule[] {
   return hits.length > 0 ? hits : [casesDomain];
 }
 
-/** Cheap, zero-LLM-cost heuristic: is this message plausibly bundling more than
- *  one topic, such that regex (which only OR's independent domain patterns)
- *  might have caught one but missed another? Multiple conjunctions, multiple
- *  case-number-shaped tokens, or unusual length are the signals — deliberately
- *  loose (false positives here just mean one extra cheap LLM call, not a
- *  correctness issue). */
-function looksComplex(message: string): boolean {
-  const wordCount = message.trim().split(/\s+/).filter(Boolean).length;
-  const hasConjunction = /\b(and|also|as\s+well\s+as|plus|additionally)\b/i.test(message) || message.includes(',');
-  const caseRefCount = (message.match(/\b[A-Z]{1,4}\d{3,}\b/gi) ?? []).length;
-  return wordCount > 12 || hasConjunction || caseRefCount > 1;
-}
-
-/** Does the message reference ONE specific case at all (by number, name, or
- *  the bare word "case")? Every Phase-2 domain requires this alongside its own
- *  topic word, so a message that has this but matched NO Phase-2 domain is a
- *  much stronger "regex might have missed the topic word" signal than zero
- *  hits alone — casesDomain's own regex includes the bare word "case", so
- *  relying on "zero hits total" almost never fires for genuinely on-topic
- *  messages (this is what the real "demographics sent" gap turned out to be:
- *  casesDomain matched via the word "case", hits.length was NOT zero, so a
- *  zero-hits-only gate silently never double-checked it). */
-function hasCaseReference(message: string): boolean {
-  return /\bcase\b/i.test(message) || /\b[A-Z]{1,4}\d{3,}\b/.test(message) || /\bvs\.?\b/i.test(message) || /\bv\.\s/i.test(message);
-}
-
 /**
- * Stage-1 (regex) + Stage-1.5 (LLM fallback) domain resolution. Same safety
- * invariant as isRefinementLLM (app/api/chat/route.ts): the LLM here only
- * decides which tool MENU is exposed this turn — it never calls a tool itself,
- * never touches streamText's function-calling. The primary chat model still
- * makes 100% of the real tool-selection/argument-extraction decisions.
+ * Stage-1 (regex) + Stage-1.5 (LLM classifier, now unconditional) domain
+ * resolution. Same safety invariant as isRefinementLLM (app/api/chat/route.ts):
+ * the LLM here only decides which tool MENU is exposed this turn — it never
+ * calls a tool itself, never touches streamText's function-calling. The
+ * primary chat model still makes 100% of the real tool-selection/argument-
+ * extraction decisions.
  *
- * Double-checks with the LLM in three situations:
- * - Zero regex hits at all (not even the always-broad casesDomain matched).
- * - NO Phase-2 (non-Cases) domain matched, but the message clearly references
- *   ONE case — the real gap found live while building Section 6 ("when was
- *   the demographics sent on case RP003668" matches casesDomain via the bare
- *   word "case", so hits.length is NOT zero, but no Phase-2 topic word fired).
- * - A Phase-2 domain DID match, but the message looksComplex() — it might be
- *   bundling a second topic regex missed.
+ * Previously this only double-checked with the LLM when a heuristic
+ * (zero regex hits / a Phase-2 topic word missing despite a case reference /
+ * looksComplex()) guessed a gap might exist. That heuristic itself kept
+ * missing real gaps this session (e.g. "demographics sent" matched casesDomain
+ * via the bare word "case", so the zero-hits gate never even considered it) —
+ * every miss meant hand-adding another regex trigger word. Now the classifier
+ * runs on every message, unconditionally, removing the "did the heuristic
+ * itself miss this gap" failure mode entirely.
  *
- * In every case where regex already found something, the LLM result is
- * MERGED into the regex hits (never replaces them), so a wrong/hallucinated
- * LLM classification can at worst add one extra harmless tool — it can never
- * remove a domain regex already matched correctly.
- *
- * Known accepted limitation: a message that matches the WRONG Phase-2 domain
- * via regex (not just the generic Cases fallback) is not double-checked
- * unless it also looksComplex() — would require running the LLM on every
- * turn, losing the zero-cost common case.
+ * The LLM result is always MERGED into the regex hits (never replaces them),
+ * so a wrong/hallucinated LLM classification can at worst add one extra
+ * harmless tool — it can never remove a domain regex already matched
+ * correctly. This merge-only behavior is what makes calling the LLM on every
+ * turn safe rather than just cheaper-but-riskier.
  */
 export async function resolveDomains(message: string): Promise<DomainModule[]> {
   const hits = regexHits(message);
-  const hasPhase2Domain = hits.some((d) => d.key !== casesDomain.key);
-
-  const noHitsAtAll = hits.length === 0;
-  const missedPhase2Signal = !hasPhase2Domain && hasCaseReference(message);
-  const multiTopicSignal = hasPhase2Domain && looksComplex(message);
-  const shouldDoubleCheck = noHitsAtAll || missedPhase2Signal || multiTopicSignal;
-
-  if (!shouldDoubleCheck) return hits.length > 0 ? hits : [casesDomain];
 
   const keys = await classifyDomainsLLM(message, DOMAINS).catch((err) => {
     console.error('[domains] resolveDomains: classifyDomainsLLM rejected unexpectedly:', err);
