@@ -148,8 +148,21 @@ function mapCaseStatus(c: Raw): string | null {
   );
 }
 
-function mapVenue(c: Raw): string | null {
-  return str(c?.caseVenue?.description) ?? (num(c?.venueId) !== null ? `Venue ${c.venueId}` : null);
+/**
+ * Live bug (2026-07-27, case RP003668) — falling straight to `Venue ${venueId}`
+ * (e.g. "Venue 13") whenever `caseVenue` is absent, even though the real venue
+ * name is available as a "Venue"-type party row in `parties` (e.g. "Riverside
+ * district office") — the same place insuranceCarrier/defendant already look.
+ * Checking the parties array first fixes this without touching the two
+ * existing fallbacks (still used when no Venue party row exists).
+ */
+function mapVenue(caseObj: Raw, topLevel: Raw): string | null {
+  const venueParty = findPopulatedParty(getPartiesArray(caseObj, topLevel), /venue/i);
+  return (
+    str(venueParty?.company) ??
+    str(caseObj?.caseVenue?.description) ??
+    (num(caseObj?.venueId) !== null ? `Venue ${caseObj.venueId}` : null)
+  );
 }
 
 function mapApplicant(caseObj: Raw, topLevel: Raw): CaseFullDetailData['applicant'] {
@@ -185,9 +198,24 @@ function getPartiesArray(caseObj: Raw, topLevel: Raw): Raw[] {
   return [];
 }
 
+/**
+ * Live bug (2026-07-27, case WC00549) — a case can have MORE THAN ONE party
+ * row of the same partyType (e.g. two "Insurance Carrier" rows: one an empty
+ * placeholder, one with the real company/phone). A plain .find() locks onto
+ * whichever comes first in the array — here that was the empty one, silently
+ * dropping the real "APPLIED RISK OMAHA" data. Preferring the first row that
+ * actually carries a name/company fixes this while still falling back to the
+ * first match (of any) when every row of that type is empty.
+ */
+function findPopulatedParty(parties: Raw[], typeRe: RegExp): Raw | undefined {
+  const matches = parties.filter((p: Raw) => typeRe.test(p?.partyTypeName ?? p?.partyType ?? ''));
+  const populated = matches.find((p: Raw) => str(p?.company) !== null || str(p?.name) !== null || str(p?.partyName) !== null);
+  return populated ?? matches[0];
+}
+
 function mapDefendant(caseObj: Raw, topLevel: Raw): CaseFullDetailData['defendant'] {
   const d = caseObj?.caseDefendent ??
-    getPartiesArray(caseObj, topLevel).find((p: Raw) => /defendant/i.test(p?.partyTypeName ?? p?.partyType ?? '')) ??
+    findPopulatedParty(getPartiesArray(caseObj, topLevel), /defendant/i) ??
     null;
   if (!d) return null;
   return {
@@ -199,7 +227,7 @@ function mapDefendant(caseObj: Raw, topLevel: Raw): CaseFullDetailData['defendan
 }
 
 function mapInsuranceCarrier(caseObj: Raw, topLevel: Raw): CaseFullDetailData['insuranceCarrier'] {
-  const p = getPartiesArray(caseObj, topLevel).find((x: Raw) => /insurance/i.test(x?.partyTypeName ?? x?.partyType ?? ''));
+  const p = findPopulatedParty(getPartiesArray(caseObj, topLevel), /insurance/i);
   if (!p) return null;
   return {
     company: str(p.company) ?? str(p.partyName),
@@ -459,7 +487,7 @@ export function mapCaseFullDetail(topLevel: Raw): CaseFullDetailData {
     caseType: mapCaseType(c),
     caseStatus: mapCaseStatus(c),
     caseDate: str(c.caseDate),
-    venue: mapVenue(c),
+    venue: mapVenue(c, topLevel),
     adjNumber: str(c.adjNumber),
     jetFileId: num(c.jetFileId),
 
