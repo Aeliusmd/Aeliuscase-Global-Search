@@ -177,6 +177,24 @@ function explicitCasePartyFieldRef(text: string): string | null {
   return m ? m[1] : null;
 }
 
+/**
+ * "Show me everything on case X" / "full detail for X" — a comprehensive
+ * single-case request that must go to getCaseFullDetail ONLY. Live bug
+ * (2026-07-27, case RP003668): this phrasing also matches casesDomain's
+ * broad Phase-1 wording ("show", "case"), so the model was ALSO offered
+ * getCaseParties — a much sparser tool, and (before a separate fix) one that
+ * leaked raw PII (SSN, DOB, occupation) straight through. gpt-4o-mini
+ * non-deterministically picked either tool for the identical question across
+ * repeated tests. Forcing getCaseFullDetail exclusively for this phrasing
+ * removes the ambiguity outright, the same way partiesFollowUpRef/
+ * venueOfCaseId below force a single tool for their own specific phrasing.
+ */
+function comprehensiveCaseDetailQuestion(text: string): boolean {
+  const comprehensive = /\b(everything|full\s*detail|full\s*case\s*(?:card|detail)|comprehensive)\b/i;
+  const caseRef = /\bcase\b|\b[A-Za-z]{1,4}\d{3,}\b|\bvs\.?\b|\bv\.\s/i;
+  return comprehensive.test(text) && caseRef.test(text);
+}
+
 /** The most recent case number referenced — a prior getCaseParties lookup, or one the user typed. */
 function lastCaseRefFromHistory(messages: UIMessage[]): string | null {
   const CN = /\b([A-Za-z]{1,3}\d{3,})\b/;
@@ -827,6 +845,17 @@ Re-send every prior filter above (with the same values) plus the new one. Only d
   let selectedTools: ReturnType<typeof selectToolsForDomains>;
   if (bareName || solNeedsYear) {
     selectedTools = { tools: {}, activeTools: [], forcedCombined: false, requireTool: false };
+  } else if (comprehensiveCaseDetailQuestion(lastUserText)) {
+    // Expose ONLY getCaseFullDetail — see comprehensiveCaseDetailQuestion's doc
+    // comment for why getCaseParties must not be offered as an alternative here.
+    const reg = buildToolRegistry({
+      apiBaseUrl, jwtToken, enforcedSearchType, enforcedLabel,
+      personSignal, personName, allowedFilterKeys, resolvedDateRange, resolvedRoleSlot,
+    });
+    const def = reg.get('getCaseFullDetail')?.definition;
+    selectedTools = def
+      ? { tools: { getCaseFullDetail: def }, activeTools: ['getCaseFullDetail'], forcedCombined: false, requireTool: true }
+      : { tools: {}, activeTools: [], forcedCombined: false, requireTool: false };
   } else if (partiesFollowUpRef) {
     // Expose ONLY getCaseParties so the model can't fall back to a filter tool.
     const reg = buildToolRegistry({
