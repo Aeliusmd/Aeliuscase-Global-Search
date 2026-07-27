@@ -41,24 +41,7 @@ CURSOR.md
 
 # Not required to run the app — kept local only, excluded from the repo
 src/
-tests/
 detections/
-
-# Keep the multi-tenant auth regression tests in the repository.
-!tests/
-tests/*
-!tests/api/
-tests/api/*
-!tests/api/authVerify.test.ts
-!tests/lib/
-tests/lib/*
-!tests/lib/authEnvelope.test.ts
-!tests/lib/authSession.test.ts
-!tests/lib/rateLimit.test.ts
-!tests/helpers/
-tests/helpers/*
-!tests/helpers/inMemoryMongo.ts
-!tests/middleware.test.ts
 
 # Agent-generated planning docs — kept local only
 docs/
