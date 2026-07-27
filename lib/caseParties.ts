@@ -10,7 +10,7 @@ interface FetchCasePartiesOpts {
 interface UpstreamResponse {
   status?: number;
   succeeded?: boolean;
-  data?: CaseParty[];
+  data?: unknown[];
 }
 
 /**
@@ -115,10 +115,23 @@ export async function fetchCaseParties(
 
     const body = (await res.json()) as UpstreamResponse;
 
-    const parties: CaseParty[] = (body?.data ?? []).map((party) => ({
-      ...party,
-      docs: party?.docs ?? [],
-    }));
+    // Live PII exposure bug (2026-07-27, case RP003668) — `{...party}` spread
+    // the ENTIRE raw upstream party row through to the model/chat response
+    // unfiltered. The CaseParty type here only declares partyType/partyName/
+    // docs (verified 2026-07-13), but that's a compile-time annotation only —
+    // it does nothing to stop extra raw fields (this case's row apparently
+    // carried SSN, DOB, and injury/occupation detail) from surviving the
+    // spread at runtime. Explicitly allowlisting exactly the 3 documented
+    // fields, whatever else the upstream row contains, is the fix — same
+    // discipline already used by every Phase 2 mapper in lib/caseFullDetail.ts.
+    const parties: CaseParty[] = (body?.data ?? []).map((raw) => {
+      const p = raw as { partyType?: unknown; partyName?: unknown; docs?: unknown };
+      return {
+        partyType: typeof p?.partyType === 'string' ? p.partyType : '',
+        partyName: typeof p?.partyName === 'string' ? p.partyName : '',
+        docs: Array.isArray(p?.docs) ? (p.docs as CasePartyDoc[]) : [],
+      };
+    });
 
     const partyDocs: CasePartyDoc[] = parties.flatMap(
       (party) => party.docs ?? [],
