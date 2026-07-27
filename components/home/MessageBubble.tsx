@@ -155,6 +155,21 @@ function TextBlock({ text }: { text: string }) {
     <div className="space-y-1">
       {lines.map((line, i) => {
         if (line.trim() === '') return <div key={i} className="h-2" />;
+        const headingMatch = line.trim().match(/^(#{1,6})\s+(.*)$/);
+        if (headingMatch) {
+          const [, hashes, headingText] = headingMatch;
+          return (
+            <p
+              key={i}
+              className={
+                hashes.length <= 2
+                  ? 'font-semibold text-foreground-900 mt-3 text-base'
+                  : 'font-semibold text-foreground-900 mt-2'
+              }
+              dangerouslySetInnerHTML={{ __html: renderInline(headingText) }}
+            />
+          );
+        }
         if (line.startsWith('**') && line.endsWith('**') && !line.slice(2, -2).includes('**')) {
           return (
             <p
