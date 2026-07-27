@@ -1,3 +1,10 @@
+// openai(modelId) defaults to OpenAI's stateful Responses API
+// (/v1/responses) in @ai-sdk/openai v3 — live-reproduced 2026-07-27
+// (AI_APICallError, 4x in one test window): "Item with id 'msg_...' not
+// found", a stale Responses-API item/conversation reference. openai.chat(...)
+// forces the plain, stateless Chat Completions API (/v1/chat/completions)
+// instead, which this app's usage (no cross-request conversation state on
+// OpenAI's side — history is managed entirely by us) doesn't need.
 import { openai } from '@ai-sdk/openai';
 import { convertToModelMessages, generateText, stepCountIs, streamText } from 'ai';
 import type { UIMessage } from 'ai';
@@ -12,7 +19,13 @@ import { resolveRoleSlot, type RoleSlotResolution } from '@/lib/roleSlots';
 import { getRequestAuth } from '@/lib/auth/request';
 import { collectCaseNumbers, recordAudit } from '@/lib/audit';
 
-export const maxDuration = 30;
+// 300s = the maximum a Vercel Function may run on a Pro-plan project (standard
+// Vercel Functions, no Fluid Compute). Was 30s — live-reproduced 2026-07-27
+// (case RP003668: 231KB raw response, 18 injuries, 34 documents, 128
+// activities) truncating a comprehensive "show me everything" reply mid-
+// sentence because the backend fetch + gpt-4o-mini's generation didn't finish
+// inside the old 30s ceiling.
+export const maxDuration = 300;
 
 // How many recent turns the AI sees. Each "turn" = one UIMessage (user or assistant).
 // Keeping this small reduces token cost while still giving the model enough context
@@ -104,7 +117,7 @@ function isRefinement(text: string): boolean {
 async function isRefinementLLM(message: string, priorLabel: string): Promise<boolean> {
   try {
     const { text } = await generateText({
-      model: openai('gpt-4o-mini'),
+      model: openai.chat('gpt-4o-mini'), // explicit Chat Completions API — see doc comment at top import for why
       system: `You classify ONE chat message sent to a legal case-search assistant.
 The user's PREVIOUS search was filtered by: ${priorLabel}.
 Does the NEW message below build on / narrow down / ask a question about THOSE SAME results (a follow-up) — or does it start a brand-new, unrelated search?
@@ -1025,7 +1038,7 @@ searchType values:
 - 1 = All Cases  2 = Open only  3 = Closed only  4 = Sub-Out only (status "Sub-d Out" — NOT "Sub-d In")${bareNameDirective}${solYearDirective}${carriedFiltersSection}${partiesFollowUpDirective}${venueOfCaseDirective}`;
 
     result = streamText({
-    model: openai('gpt-4o-mini'),
+    model: openai.chat('gpt-4o-mini'), // explicit Chat Completions API — see doc comment at top import for why
     system: systemPrompt,
     messages: modelMessages,
     stopWhen: stepCountIs(5),

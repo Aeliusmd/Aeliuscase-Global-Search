@@ -18,7 +18,7 @@ import type { DomainModule } from './types';
 export async function classifyDomainsLLM(message: string, domains: DomainModule[]): Promise<string[]> {
   try {
     const { text } = await generateText({
-      model: openai('gpt-4o-mini'),
+      model: openai.chat('gpt-4o-mini'), // stable Chat Completions API — see app/api/chat/route.ts's import comment for why
       system: `You classify ONE chat message sent to a legal case-management chatbot into zero or more of these categories:
 ${domains.map((d) => `- ${d.key}: ${d.llmHint ?? d.label}`).join('\n')}
 Reply with a comma-separated list of matching category keys (e.g. "tasks,events"), or exactly NONE if it's a general case search that fits none of these. No explanation, no other text.`,

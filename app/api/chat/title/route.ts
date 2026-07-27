@@ -21,7 +21,7 @@ export async function POST(req: Request) {
 
   try {
     const { text } = await generateText({
-      model: openai('gpt-4o-mini'),
+      model: openai.chat('gpt-4o-mini'), // stable Chat Completions API — see app/api/chat/route.ts's import comment for why
       prompt: `Generate a short title (3–6 words) for this legal case search chat session.
 
 User: "${userMessage.slice(0, 200)}"
