@@ -1137,6 +1137,34 @@ searchType values:
           system: `${systemPrompt}\n\n━━━ FINAL REPLY — MANDATORY FORMAT ━━━\nYou just retrieved a LIST of ${lastOutput.totalRecords ?? 'multiple'} case(s)${lastOutput.filterLabel ? ` (${lastOutput.filterLabel})` : ''}. The result card shown above your reply ALREADY displays every case number, name, employer, date, and status — do not repeat ANY of that. Your entire reply must be exactly ONE short generic sentence and nothing else, e.g. "Here are the ${lastOutput.filterLabel ?? 'matching'} cases." No list, no bullets, no numbers, no case details of any kind.`,
         };
       }
+
+      // For a getCaseFullDetail result (tasks/events/documents/notes/activities/
+      // accounting nested together): gpt-4o-mini has been observed (live,
+      // 2026-07-27, case RP003668 — 34 real documents, 128 real activities) to
+      // hallucinate "no documents uploaded" and to silently drop the activities
+      // section entirely from a "show me everything" summary, despite the real
+      // counts being present in the tool output it already has. Same fix
+      // pattern as EXACT COUNT / FINAL REPLY above: compute the real counts
+      // server-side and hand them back as a verified fact the model must
+      // match, instead of trusting it to tally a large nested object itself.
+      const fullDetailOutput = lastToolResult?.output as {
+        success?: boolean;
+        data?: {
+          tasks?: unknown[]; events?: unknown[]; documents?: unknown[];
+          notes?: unknown[]; activities?: unknown[];
+          accounting?: { chequeRequests?: unknown[]; payments?: unknown[]; clientCostsPaid?: unknown[]; settlementFees?: unknown[] };
+        };
+      } | undefined;
+      if (fullDetailOutput?.success && fullDetailOutput.data
+        && (Array.isArray(fullDetailOutput.data.tasks) || Array.isArray(fullDetailOutput.data.activities))) {
+        const d = fullDetailOutput.data;
+        const acc = d.accounting;
+        const accountingCount = (acc?.chequeRequests?.length ?? 0) + (acc?.payments?.length ?? 0)
+          + (acc?.clientCostsPaid?.length ?? 0) + (acc?.settlementFees?.length ?? 0);
+        return {
+          system: `${systemPrompt}\n\n━━━ CASE DETAIL — VERIFIED SECTION COUNTS ━━━\nThe real, verified counts from the tool result you just received are: tasks=${d.tasks?.length ?? 0}, events=${d.events?.length ?? 0}, documents=${d.documents?.length ?? 0}, notes=${d.notes?.length ?? 0}, activities=${d.activities?.length ?? 0}, accounting records=${accountingCount}. If the user asked for a comprehensive/"everything" summary, your reply MUST mention every one of these six sections and MUST match these exact counts — state "no X on file" ONLY when its count above is 0, and state that records exist (with the real count) when its count above is greater than 0. Never guess, invent, or claim "none" for a section whose count above is non-zero, even if you cannot see every individual row.`,
+        };
+      }
       return {};
     },
   });
