@@ -60,6 +60,15 @@ interface MessageBubbleProps {
 
 function renderInline(text: string): string {
   return text
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g, (_match, label: string, url: string) => {
+      // Real document fileUrls can contain literal spaces (e.g.
+      // ".../fax-confirmation - Insurance .pdf") — encodeURI turns those into
+      // %20 so the href is valid, without touching the already-safe rest of
+      // the URL. `"` is escaped separately so the URL can't break out of the
+      // href attribute.
+      const safeUrl = encodeURI(url).replace(/"/g, '%22');
+      return `<a href="${safeUrl}" target="_blank" rel="noopener noreferrer" style="color:#6763AC;text-decoration:underline;">${label}</a>`;
+    })
     .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
     .replace(
       /`([^`]+)`/g,
