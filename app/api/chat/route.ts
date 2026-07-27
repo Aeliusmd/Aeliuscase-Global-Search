@@ -195,6 +195,63 @@ function comprehensiveCaseDetailQuestion(text: string): boolean {
   return comprehensive.test(text) && caseRef.test(text);
 }
 
+/**
+ * Phase-2 domain follow-ups with NO case reference of their own ("send me
+ * the Filed Application document", "what's overdue") — anaphoric to whichever
+ * case a PRIOR getCaseFullDetail/getCaseTasks/getCaseEvents/getCaseDocuments/
+ * getCaseNotes/getCaseActivities/getCaseAccounting call was about. Live bug
+ * (2026-07-27, case RP003668): a document-name follow-up with no case
+ * reference at all matched NO domain (every Phase-2 domain's own regex
+ * requires a case reference alongside its topic word — see e.g.
+ * lib/domains/documents.ts), fell through to casesDomain's default case-
+ * SEARCH tools, and searched for "Filed application for adjudication
+ * document" as if it were a case name — 0 results, "no cases found". Mirrors
+ * the existing partiesFollowUpRef/venueOfCaseId anaphoric patterns above,
+ * just for the 6 newer Phase-2 tools instead of getCaseParties/combinedSearch.
+ */
+const PHASE2_ANAPHORIC_TOPICS: Array<{ re: RegExp; tool: string }> = [
+  { re: /\b(task|tasks|to-?dos?|due|overdue)\b/i, tool: 'getCaseTasks' },
+  { re: /\b(event|events|hearing|hearings|conference|calendar)\b/i, tool: 'getCaseEvents' },
+  { re: /\b(document|documents|upload(?:ed|s)?|files?)\b/i, tool: 'getCaseDocuments' },
+  { re: /\bnotes?\b/i, tool: 'getCaseNotes' },
+  { re: /\b(activit(?:y|ies)|audit|history)\b/i, tool: 'getCaseActivities' },
+  { re: /\b(accounting|cheques?|invoices?|settlement\s*fees?|client\s*costs?|current\s*balance)\b/i, tool: 'getCaseAccounting' },
+];
+
+function anaphoricPhase2Tool(text: string): string | null {
+  const hasOwnCaseRef = /\bcase\b|\b[A-Za-z]{1,4}\d{3,}\b|\bvs\.?\b|\bv\.\s/i.test(text);
+  if (hasOwnCaseRef) return null; // has its own reference — normal domain routing already handles this
+  for (const { re, tool } of PHASE2_ANAPHORIC_TOPICS) {
+    if (re.test(text)) return tool;
+  }
+  return null;
+}
+
+const PHASE2_TOOL_TYPES = new Set([
+  'tool-getCaseFullDetail', 'tool-getCaseTasks', 'tool-getCaseEvents',
+  'tool-getCaseDocuments', 'tool-getCaseNotes', 'tool-getCaseActivities', 'tool-getCaseAccounting',
+]);
+
+/** The most recent case referenced by any Phase-2 tool call (getCaseFullDetail
+ *  nests it under output.data; the other 6 return it at the top level). */
+function lastPhase2CaseRef(messages: UIMessage[]): string | null {
+  for (const msg of [...messages].reverse()) {
+    if (msg.role !== 'assistant') continue;
+    for (const part of (msg.parts ?? []) as {
+      type: string;
+      input?: { caseNumber?: string; caseName?: string };
+      output?: { caseNumber?: string; caseName?: string; data?: { caseNumber?: string; caseName?: string } };
+    }[]) {
+      if (!PHASE2_TOOL_TYPES.has(part.type)) continue;
+      const ref = part.output?.data?.caseNumber ?? part.output?.data?.caseName
+        ?? part.output?.caseNumber ?? part.output?.caseName
+        ?? part.input?.caseNumber ?? part.input?.caseName;
+      if (ref) return ref;
+    }
+  }
+  return null;
+}
+
 /** The most recent case number referenced — a prior getCaseParties lookup, or one the user typed. */
 function lastCaseRefFromHistory(messages: UIMessage[]): string | null {
   const CN = /\b([A-Za-z]{1,3}\d{3,})\b/;
@@ -825,6 +882,20 @@ Re-send every prior filter above (with the same values) plus the new one. Only d
 ‼️ THIS TURN — The user is asking about a field (venue/attorney/applicant/insurance carrier/parties/etc.) of ONE specific case: ${partiesFollowUpRef}. Call getCaseParties with caseNumber "${partiesFollowUpRef}", then answer ONLY the specific field they asked, read from the parties result. Do NOT call a filter or search tool.`
     : '';
 
+  // Phase-2 domain follow-up (tasks/events/documents/notes/activities/
+  // accounting) with no case reference of its own — see anaphoricPhase2Tool's
+  // doc comment. Only considered when nothing above already claimed this turn.
+  const phase2FollowUpTool = (!bareName && !solNeedsYear && !partiesFollowUpRef)
+    ? anaphoricPhase2Tool(lastUserText)
+    : null;
+  const phase2FollowUpRef = phase2FollowUpTool ? lastPhase2CaseRef(messages) : null;
+
+  const phase2FollowUpDirective = (phase2FollowUpTool && phase2FollowUpRef)
+    ? `
+
+‼️ THIS TURN — The user is asking about ${phase2FollowUpTool} for the case they were just viewing: ${phase2FollowUpRef}. Call ${phase2FollowUpTool} with that case identifier (caseNumber or caseName, whichever fits "${phase2FollowUpRef}"). Do NOT search for a new case or call any other tool.`
+    : '';
+
   // "How many cases are in THAT venue?" — resolve the prior case's venueId and
   // search it, so the user gets the real count instead of being asked which venue.
   const venueOfCaseRef = (!bareName && !solNeedsYear && !partiesFollowUpRef && anaphoricVenueOfCaseQuestion(lastUserText))
@@ -865,6 +936,17 @@ Re-send every prior filter above (with the same values) plus the new one. Only d
     const def = reg.get('getCaseParties')?.definition;
     selectedTools = def
       ? { tools: { getCaseParties: def }, activeTools: ['getCaseParties'], forcedCombined: false, requireTool: true }
+      : { tools: {}, activeTools: [], forcedCombined: false, requireTool: false };
+  } else if (phase2FollowUpTool && phase2FollowUpRef) {
+    // Expose ONLY the one Phase-2 tool the follow-up is about, with the case
+    // it's anaphoric to — see anaphoricPhase2Tool's doc comment.
+    const reg = buildToolRegistry({
+      apiBaseUrl, jwtToken, enforcedSearchType, enforcedLabel,
+      personSignal, personName, allowedFilterKeys, resolvedDateRange, resolvedRoleSlot,
+    });
+    const def = reg.get(phase2FollowUpTool)?.definition;
+    selectedTools = def
+      ? { tools: { [phase2FollowUpTool]: def }, activeTools: [phase2FollowUpTool], forcedCombined: false, requireTool: true }
       : { tools: {}, activeTools: [], forcedCombined: false, requireTool: false };
   } else if (venueOfCaseId) {
     // "cases in that venue" — force combinedSearch with the resolved venueId.
@@ -989,6 +1071,7 @@ For ALL filter tools: if the required ID or value is missing from the user's mes
 • If the result has ambiguous: true, list the candidates and ask the user which case they mean — same as getCaseFullDetail.
 • "Has X been uploaded?" / "show settlement-related documents" — match by keyword against name/category yourself; there is no server-side search param.
 • An empty documents list means the case genuinely has no documents on file — say so plainly, do not invent one.
+• When you name a SPECIFIC document the user asked for (not a broad list), format it as a clickable markdown link using its real fileUrl: [document name](fileUrl) — never just state the name as plain text when fileUrl is present, and never invent a URL.
 • This is a single-case lookup, not a list search — never call combinedSearch or searchCases for these questions.
 
 ━━━ CASE NOTES ━━━
@@ -1064,7 +1147,7 @@ Rules for searchText:
 - Keep searchText SHORT — name, case number, or keyword only.
 
 searchType values:
-- 1 = All Cases  2 = Open only  3 = Closed only  4 = Sub-Out only (status "Sub-d Out" — NOT "Sub-d In")${bareNameDirective}${solYearDirective}${carriedFiltersSection}${partiesFollowUpDirective}${venueOfCaseDirective}`;
+- 1 = All Cases  2 = Open only  3 = Closed only  4 = Sub-Out only (status "Sub-d Out" — NOT "Sub-d In")${bareNameDirective}${solYearDirective}${carriedFiltersSection}${partiesFollowUpDirective}${phase2FollowUpDirective}${venueOfCaseDirective}`;
 
     result = streamText({
     model: openai.chat('gpt-4o-mini'), // explicit Chat Completions API — see doc comment at top import for why
