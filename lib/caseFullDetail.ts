@@ -351,11 +351,35 @@ function mapEvents(topLevel: Raw): CaseEventSummary[] {
   return out;
 }
 
+/**
+ * The raw fileUrl points directly at the file storage path
+ * (.../CaseDocFiles/{caseId}/{name}.pdf) — live-verified 2026-07-28 that this
+ * direct path 404s from the browser; the backend requires going through
+ * GET /api/Filehandling/GetFilByPath?filePath={the raw url} instead (real
+ * PDF, 200 OK, confirmed against a currently-live document). encodeURIComponent
+ * is required on the filePath value or the backend 500s.
+ *
+ * KNOWN BACKEND BUG (not fixable client-side — tried encodeURIComponent,
+ * encodeURI, "+"-for-space, raw/unencoded, and double-encoding, all 500):
+ * GetFilByPath itself throws a 500 for any filePath whose filename contains a
+ * space or parenthesis, which real uploaded documents commonly do (e.g.
+ * "Batch.Scan.New (1)_....pdf"). Only report this to the backend team — there
+ * is no query-string encoding that works around it.
+ */
+function wrapFileUrl(rawUrl: string | null, apiBaseUrl: string | undefined): string | null {
+  if (!rawUrl) return null;
+  if (!apiBaseUrl) return rawUrl;
+  return `${apiBaseUrl}/api/Filehandling/GetFilByPath?filePath=${encodeURIComponent(rawUrl)}`;
+}
+
 /** Live-verified 2026-07-19 against RP2021 (199 real documents). `uploadedBy`
  *  is a plain string in the real response, not the {id,name} object the
  *  original PM-request doc asked for — both are still checked defensively.
- *  Documents live at the top level, sibling of "case" (data.documents). */
-function mapDocuments(topLevel: Raw): CaseDocumentSummary[] {
+ *  Documents live at the top level, sibling of "case" (data.documents).
+ *  `apiBaseUrl` is optional so existing direct-fixture tests (which assert
+ *  the raw fileUrl unchanged) keep working — only fetchCaseFullDetail's real
+ *  call site passes it, to wrap the link via GetFilByPath (see wrapFileUrl). */
+function mapDocuments(topLevel: Raw, apiBaseUrl?: string): CaseDocumentSummary[] {
   const documents: Raw[] = topLevel?.documents ?? [];
   const out: CaseDocumentSummary[] = [];
   for (const d of documents) {
@@ -366,7 +390,7 @@ function mapDocuments(topLevel: Raw): CaseDocumentSummary[] {
       category: str(d?.category),
       uploadedBy: typeof d?.uploadedBy === 'string' ? str(d.uploadedBy) : str(d?.uploadedBy?.name),
       uploadedDate: str(d?.uploadedDate) ?? str(d?.uploadDate),
-      fileUrl: str(d?.fileUrl) ?? str(d?.fileLocation),
+      fileUrl: wrapFileUrl(str(d?.fileUrl) ?? str(d?.fileLocation), apiBaseUrl),
     });
   }
   return out;
@@ -478,7 +502,7 @@ function mapAccounting(topLevel: Raw): CaseAccountingSummary {
   };
 }
 
-export function mapCaseFullDetail(topLevel: Raw): CaseFullDetailData {
+export function mapCaseFullDetail(topLevel: Raw, apiBaseUrl?: string): CaseFullDetailData {
   const c: Raw = topLevel?.case ?? {};
   return {
     caseNumber: str(c.caseNumber),
@@ -505,7 +529,7 @@ export function mapCaseFullDetail(topLevel: Raw): CaseFullDetailData {
 
     tasks: mapTasks(topLevel),
     events: mapEvents(topLevel),
-    documents: mapDocuments(topLevel),
+    documents: mapDocuments(topLevel, apiBaseUrl),
     notes: mapNotes(topLevel),
     activities: mapActivities(topLevel),
     accounting: mapAccounting(topLevel),
@@ -575,7 +599,7 @@ export async function fetchCaseFullDetail(opts: FetchCaseFullDetailOpts): Promis
       return { success: false, error: `Case "${identifier}" not found.` };
     }
 
-    const mapped = mapCaseFullDetail(inner.data);
+    const mapped = mapCaseFullDetail(inner.data, apiBaseUrl);
     cacheSet(key, mapped);
     return { success: true, data: mapped };
   } catch (err: unknown) {

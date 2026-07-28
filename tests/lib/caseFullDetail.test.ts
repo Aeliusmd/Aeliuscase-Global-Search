@@ -513,6 +513,30 @@ describe('mapCaseFullDetail — documents (Section 4, verified against real live
   it('does not throw when a document entry is entirely empty/malformed', () => {
     expect(() => mapCaseFullDetail({ documents: [{}] })).not.toThrow();
   });
+
+  // Live 404 reproduced 2026-07-28: the raw fileUrl points directly at file
+  // storage, which the browser can't reach directly — the backend requires
+  // going through GET /api/Filehandling/GetFilByPath?filePath={raw url}
+  // instead (confirmed live against a currently-existing document, 200 OK).
+  it('wraps fileUrl through GetFilByPath when apiBaseUrl is provided', () => {
+    const data = mapCaseFullDetail(REAL_DOCUMENTS_FIXTURE, 'https://uatapi.aeliuscase.com');
+    expect(data.documents[0].fileUrl).toBe(
+      'https://uatapi.aeliuscase.com/api/Filehandling/GetFilByPath?filePath='
+      + encodeURIComponent('https://uatapi.aeliuscase.com/Data01/aeliuscase_rplaw_pr/CaseDocs/CaseDocFiles/3075/Williams, Brandon Scan NOH 10.3.16.pdf'),
+    );
+  });
+
+  it('leaves fileUrl as the raw URL when apiBaseUrl is not provided (existing fixture tests rely on this)', () => {
+    const data = mapCaseFullDetail(REAL_DOCUMENTS_FIXTURE);
+    expect(data.documents[0].fileUrl).toBe(
+      'https://uatapi.aeliuscase.com/Data01/aeliuscase_rplaw_pr/CaseDocs/CaseDocFiles/3075/Williams, Brandon Scan NOH 10.3.16.pdf',
+    );
+  });
+
+  it('never wraps a null fileUrl', () => {
+    const data = mapCaseFullDetail({ documents: [{ id: 1 }] }, 'https://uatapi.aeliuscase.com');
+    expect(data.documents[0].fileUrl).toBeNull();
+  });
 });
 
 // Real shape, captured live 2026-07-19 against RP003668 (42 real notes).
