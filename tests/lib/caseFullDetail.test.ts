@@ -413,9 +413,11 @@ describe('mapCaseFullDetail — events (Section 3, verified against real live da
 // checked all happened to have zero documents). Confirms uploadedBy really is
 // a plain string in production data, and real fileUrl values are full
 // uatapi.aeliuscase.com URLs.
-// docId/origin added 2026-07-28 after switching document links to the
-// GetFirmDocFile-backed download proxy — real shape confirmed live via the
-// dashboard's own Preview-Document network call (compositeKey "{docId}_{origin}").
+// id/docId/origin added 2026-07-28 after switching document links to the
+// GetFirmDocFile-backed download proxy. The second row deliberately has
+// id !== docId, mirroring the real origin=1 (batch-scan) rows found live on
+// case 224 — GetFirmDocFile needs `id` there, not `docId` (see
+// buildDownloadUrl's doc comment).
 const REAL_DOCUMENTS_FIXTURE = {
   documents: [
     {
@@ -424,7 +426,7 @@ const REAL_DOCUMENTS_FIXTURE = {
       fileUrl: 'https://uatapi.aeliuscase.com/Data01/aeliuscase_rplaw_pr/CaseDocs/CaseDocFiles/3075/Williams, Brandon Scan NOH 10.3.16.pdf',
     },
     {
-      id: 40218, docId: 40218, origin: 1, name: 'Williams, Brandon Scan Sub of Attny 9.8.16', uploadedBy: 'Jennette',
+      id: 123, docId: 40218, origin: 1, name: 'Williams, Brandon Scan Sub of Attny 9.8.16', uploadedBy: 'Jennette',
       uploadedDate: '2016-09-12T11:56:12',
       fileUrl: 'https://uatapi.aeliuscase.com/Data01/aeliuscase_rplaw_pr/CaseDocs/CaseDocFiles/3075/Williams, Brandon Scan Sub of Attny 9.8.16.pdf',
     },
@@ -525,13 +527,21 @@ describe('mapCaseFullDetail — documents (Section 4, verified against real live
   // (app/api/documents/download) instead, carrying the docId/origin
   // (confirmed live to map to GetFirmDocFile's docId/docCategory params) and
   // the current session id so the proxy can resolve the real token itself.
-  it('builds an ABSOLUTE download-proxy URL (docId + origin as docCategory + sessionId) when sessionId AND appOrigin are provided', () => {
+  it('builds an ABSOLUTE download-proxy URL from the row id + origin, when sessionId AND appOrigin are provided', () => {
     const data = mapCaseFullDetail(REAL_DOCUMENTS_FIXTURE, 'session-abc', 'https://aeliuscase-global-search.vercel.app');
     expect(data.documents[0].fileUrl).toBe(
       'https://aeliuscase-global-search.vercel.app/api/documents/download?docId=41494&docCategory=3&sessionId=session-abc',
     );
+  });
+
+  // Live-verified 2026-07-28 on case 224: origin=1 (batch-scan) rows are the
+  // only ones where id !== docId, and GetFirmDocFile 500s on their docId
+  // (607/405) while returning real PDFs for their id (123/111). Using the
+  // row's own `id` is what makes both origins work.
+  it('uses the row id (not docId) when they differ, as origin=1 rows require', () => {
+    const data = mapCaseFullDetail(REAL_DOCUMENTS_FIXTURE, 'session-abc', 'https://aeliuscase-global-search.vercel.app');
     expect(data.documents[1].fileUrl).toBe(
-      'https://aeliuscase-global-search.vercel.app/api/documents/download?docId=40218&docCategory=1&sessionId=session-abc',
+      'https://aeliuscase-global-search.vercel.app/api/documents/download?docId=123&docCategory=1&sessionId=session-abc',
     );
   });
 
@@ -554,7 +564,7 @@ describe('mapCaseFullDetail — documents (Section 4, verified against real live
     );
   });
 
-  it('falls back to the raw fileUrl when docId/origin are missing, even with sessionId and appOrigin', () => {
+  it('falls back to the raw fileUrl when id/origin are missing, even with sessionId and appOrigin', () => {
     const data = mapCaseFullDetail({
       documents: [{ id: 1, name: 'X.pdf', fileUrl: 'https://uatapi.aeliuscase.com/x.pdf' }],
     }, 'session-abc', 'https://aeliuscase-global-search.vercel.app');

@@ -371,15 +371,20 @@ function mapEvents(topLevel: Raw): CaseEventSummary[] {
  * route can resolve the real upstream token server-side and attach it itself
  * when calling GetFirmDocFile.
  *
- * `docId`/`docCategory` map to the raw document's `docId`/`origin` fields —
- * confirmed live 2026-07-28 via the dashboard's own Preview-Document network
- * call: its `compositeKey` ("{docId}_{origin}", e.g. "478_3") matched the
- * exact docId/docCategory pair that returned 200. NOT `id` (differs from
- * `docId` for some rows) or `docCategoryId` (unrelated — always the same
- * value across documents that need different docCategory values).
+ * GetFirmDocFile's `docCategory` is the raw row's `origin` field (NOT
+ * `docCategoryId`, which is unrelated — it holds the same value across
+ * documents that need different docCategory values).
+ *
+ * Its `docId` is the raw row's `id` field, NOT the row's own `docId` field.
+ * These are equal on most rows (live: 66 of 68 on case 224 — every origin
+ * 2/3/4 row), which is exactly what made this easy to get wrong: the
+ * dashboard's `compositeKey` is "{docId}_{origin}", so `docId` looks right.
+ * But on origin=1 (batch-scan/"BSCN") rows the two genuinely differ, and
+ * only `id` works — live-verified both ways on case 224: docId 607/405 both
+ * returned 500, while their `id` values 123/111 returned real PDFs (200).
  */
 function buildDownloadUrl(
-  docId: number | null,
+  id: number | null,
   origin: number | null,
   sessionId: string | undefined,
   appOrigin: string | undefined,
@@ -391,8 +396,8 @@ function buildDownloadUrl(
   // — an always-broken link. Building a full absolute URL server-side (using
   // the incoming request's own origin, so it's correct in every environment)
   // removes the model's opportunity to guess wrong.
-  if (docId === null || origin === null || !sessionId || !appOrigin) return null;
-  return `${appOrigin}/api/documents/download?docId=${docId}&docCategory=${origin}&sessionId=${encodeURIComponent(sessionId)}`;
+  if (id === null || origin === null || !sessionId || !appOrigin) return null;
+  return `${appOrigin}/api/documents/download?docId=${id}&docCategory=${origin}&sessionId=${encodeURIComponent(sessionId)}`;
 }
 
 /** Live-verified 2026-07-19 against RP2021 (199 real documents). `uploadedBy`
@@ -403,7 +408,7 @@ function buildDownloadUrl(
  *  the raw fileUrl unchanged when it's absent) keep working — only
  *  fetchCaseFullDetail's real call site passes it, to build the proxied
  *  download link (see buildDownloadUrl). Falls back to the raw fileUrl when
- *  sessionId is absent OR the row is missing docId/origin (defensive —
+ *  sessionId/appOrigin is absent OR the row is missing id/origin (defensive —
  *  should not happen for a real document, but never worse than the old
  *  raw-url behavior). */
 function mapDocuments(topLevel: Raw, sessionId?: string, appOrigin?: string): CaseDocumentSummary[] {
@@ -418,7 +423,7 @@ function mapDocuments(topLevel: Raw, sessionId?: string, appOrigin?: string): Ca
       category: str(d?.category),
       uploadedBy: typeof d?.uploadedBy === 'string' ? str(d.uploadedBy) : str(d?.uploadedBy?.name),
       uploadedDate: str(d?.uploadedDate) ?? str(d?.uploadDate),
-      fileUrl: buildDownloadUrl(num(d?.docId), num(d?.origin), sessionId, appOrigin) ?? rawFileUrl,
+      fileUrl: buildDownloadUrl(num(d?.id), num(d?.origin), sessionId, appOrigin) ?? rawFileUrl,
     });
   }
   return out;
@@ -574,6 +579,45 @@ function mapCandidate(c: Raw): CaseFullDetailCandidate {
   };
 }
 
+/**
+ * The dedicated case-documents endpoint (POST /api/CaseDocs) the dashboard's
+ * own Docs tab uses — see the call site in fetchCaseFullDetail for why
+ * GetCaseFullDetail's embedded documents array can't be trusted on its own.
+ *
+ * pageSize 200 (vs the dashboard's own 50) fetches every document in one
+ * call for realistic case sizes — live-verified against a 68-document case
+ * (totalPages went 2 -> 1, 68KB response). A case with more than 200
+ * documents would still be truncated; that's an accepted limit here rather
+ * than paginating, since the chatbot summarizes rather than paginates, and
+ * 200 is already far past what a chat answer usefully lists.
+ */
+const CASE_DOCS_PAGE_SIZE = 200;
+
+async function fetchCaseDocsList(
+  apiBaseUrl: string,
+  jwtToken: string,
+  caseId: number,
+): Promise<Raw[] | null> {
+  try {
+    const res = await fetch(`${apiBaseUrl}/api/CaseDocs`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${jwtToken}`,
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+      },
+      body: JSON.stringify({ caseId, page: 1, pageSize: CASE_DOCS_PAGE_SIZE }),
+      cache: 'no-store',
+    });
+    if (!res.ok) return null;
+    const json = (await res.json()) as Raw;
+    const items = json?.data?.items;
+    return Array.isArray(items) ? items : null;
+  } catch {
+    return null;
+  }
+}
+
 export interface FetchCaseFullDetailOpts {
   apiBaseUrl: string;
   jwtToken: string;
@@ -638,6 +682,28 @@ export async function fetchCaseFullDetail(opts: FetchCaseFullDetailOpts): Promis
     }
 
     const mapped = mapCaseFullDetail(inner.data, sessionId, appOrigin);
+
+    // GetCaseFullDetail's OWN documents array is unreliable — live-verified
+    // 2026-07-28 that case AE-00224 (internal id 224) returns documents: []
+    // from it despite genuinely having 68 documents (its tasks/events/notes
+    // came back empty too, while activities returned 989, so it looks like a
+    // partial-payload issue on a large case rather than a permission one).
+    // Other cases (e.g. AE005) DO get a correct documents array from it, so
+    // the failure is silent and case-dependent — the chatbot simply reported
+    // "no documents on file" for a case with 68 of them.
+    //
+    // POST /api/CaseDocs is the dedicated, paginated endpoint the dashboard's
+    // own Docs tab uses, and it returns all 68 correctly. Its item shape is
+    // the same one mapDocuments already handles (docId/origin/name/fileName/
+    // uploadedBy/uploadDate/fileLocation), so the rows just get re-mapped.
+    // Best-effort: any failure leaves GetCaseFullDetail's own array in place,
+    // so this can never be worse than before.
+    const internalCaseId = num(inner.data?.case?.id);
+    if (internalCaseId !== null) {
+      const items = await fetchCaseDocsList(apiBaseUrl, jwtToken, internalCaseId);
+      if (items) mapped.documents = mapDocuments({ documents: items }, sessionId, appOrigin);
+    }
+
     cacheSet(key, mapped);
     return { success: true, data: mapped };
   } catch (err: unknown) {
