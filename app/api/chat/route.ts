@@ -1262,6 +1262,28 @@ searchType values:
       const lastOutput = lastToolResult?.output as
         { success?: boolean; totalRecords?: number; filterLabel?: string; cases?: unknown[] } | undefined;
 
+      // The 6 single-section Phase-2 tools (getCaseDocuments/Tasks/Events/
+      // Notes/Activities/Accounting) return a FLAT array at the top level
+      // ({success, caseNumber, caseName, documents: [...]}) — no totalRecords
+      // and not the nested `data` shape either, so neither of the two
+      // count-injection branches below used to cover them. Live-reproduced
+      // 2026-07-28 on case AE-00224 (68 real documents, all 68 correctly
+      // returned by the tool): gpt-4o-mini answered "50", "64", "65" across
+      // runs of the same question — it eyeballs a long array instead of
+      // counting it. Computed here, ABOVE the countQuestion branch, because
+      // that branch returns early and would otherwise swallow this case.
+      const sectionOutput = lastToolResult?.output as (
+        Record<string, unknown> & { success?: boolean }
+      ) | undefined;
+      const SECTION_KEYS = ['documents', 'tasks', 'events', 'notes', 'activities'] as const;
+      const sectionKey = sectionOutput?.success
+        ? SECTION_KEYS.find((k) => Array.isArray(sectionOutput[k]))
+        : undefined;
+      const sectionCount = sectionKey ? (sectionOutput![sectionKey] as unknown[]).length : null;
+      const sectionCountDirective = (sectionKey && sectionCount !== null)
+        ? `${systemPrompt}\n\n━━━ EXACT ${sectionKey.toUpperCase()} COUNT ━━━\nThe tool result you JUST received contains EXACTLY ${sectionCount} ${sectionKey}. If the user asked how many, state ${sectionCount} and no other number. Never estimate, round, or re-count the list yourself — ${sectionCount} is the verified total, even if you only itemize some of them in your reply.`
+        : null;
+
       // After the tool ran: for an explicit "how many" question, hand the model
       // the REAL totalRecords so it states that exact number instead of guessing
       // — live-verified 2026-07-16 to otherwise hallucinate (617 → "8") or omit
@@ -1273,6 +1295,7 @@ searchType values:
             system: `${systemPrompt}\n\n━━━ EXACT COUNT ━━━\nThe user explicitly asked HOW MANY. The verified real total is exactly ${lastOutput.totalRecords}${lastOutput.filterLabel ? ` (${lastOutput.filterLabel})` : ''}. State this EXACT number in your one-sentence reply. Never use any other number, even if other text in the tool output suggests a different one.`,
           };
         }
+        if (sectionCountDirective) return { system: sectionCountDirective };
         return {};
       }
 
@@ -1320,6 +1343,10 @@ searchType values:
           system: `${systemPrompt}\n\n━━━ CASE DETAIL — VERIFIED SECTION COUNTS ━━━\nThe real, verified counts from the tool result you JUST received, this turn, are: tasks=${d.tasks?.length ?? 0}, events=${d.events?.length ?? 0}, documents=${d.documents?.length ?? 0}, notes=${d.notes?.length ?? 0}, activities=${d.activities?.length ?? 0}, accounting records=${accountingCount}. These numbers OVERRIDE anything you or an earlier reply said about this same case earlier in this conversation — a prior turn's answer may have been wrong or about stale data, so ignore it and use ONLY the numbers above. If the user asked for a comprehensive/"everything" summary, your reply MUST mention every one of these six sections and MUST match these exact counts — state "no X on file" ONLY when its count above is 0, and when a count above is greater than 0 you MUST explicitly say records exist and state that real number (e.g. "there are ${d.documents?.length ?? 0} documents on file"). Never say "no documents"/"no activities"/etc. for a section whose count above is non-zero, even if you cannot see every individual row, and even if you said otherwise a moment ago.`,
         };
       }
+
+      // Same verified count for the non-"how many" phrasings too ("list the
+      // documents on X"), so a partial itemization can't imply a wrong total.
+      if (sectionCountDirective) return { system: sectionCountDirective };
       return {};
     },
   });
