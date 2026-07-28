@@ -145,9 +145,16 @@ function formatCarriedFilters(values: Record<string, unknown>): string {
  * attorney on it") that references the case ANAPHORICALLY, with no case number in
  * THIS message. Such a follow-up must go to getCaseParties for the case the user
  * was just viewing — not a filter tool (e.g. "venue" → getByVenueId(0)).
+ *
+ * "documents?" removed from the field list 2026-07-28 (live bug, case AE005):
+ * this predates Phase 2's dedicated getCaseDocuments/documentsDomain (the
+ * fuller case-level document list) — with it still here, ANY "documents"
+ * question force-exposed ONLY getCaseParties (requireTool: true), which
+ * returns just party-attached docs (often empty), so the model reported
+ * "no documents" even when getCaseDocuments would have found real ones.
  */
 function anaphoricPartyFieldQuestion(text: string): boolean {
-  const field = /\b(part(?:y|ies)|contacts?|documents?|venue|insurance\s+carrier|carrier|applicant|defendant|attorney|coordinator|employer)\b/i;
+  const field = /\b(part(?:y|ies)|contacts?|venue|insurance\s+carrier|carrier|applicant|defendant|attorney|coordinator|employer)\b/i;
   const anaphor = /\b(?:that|this|the|same)\s+(?:case|one|matter|file)\b|\bon\s+it\b|\bfor\s+it\b/i;
   const hasCaseNumber = /\b[A-Za-z]{1,3}\d{3,}\b/;
   return field.test(text) && anaphor.test(text) && !hasCaseNumber.test(text);
@@ -169,10 +176,19 @@ function anaphoricVenueOfCaseQuestion(text: string): boolean {
  * RP2134", "venue for case RP2010"). Returns the case number. Must go to
  * getCaseParties — a role word like "attorney" otherwise pulls it to a staff /
  * combined search. Distinct from the anaphoric form (no number) above.
+ *
+ * "documents?" removed from the field list 2026-07-28 (live bug reproduced
+ * both directly and locally, case AE005): "Show me the documents on case
+ * AE005" matched this pattern (documents ... on ... AE005) and force-exposed
+ * ONLY getCaseParties — the model then answered from its (often-empty)
+ * party-attached partyDocs array and said "no documents on file" even though
+ * getCaseDocuments (Phase 2's dedicated case-level document list) had real
+ * ones. This check runs BEFORE domain-based tool selection in the route, so
+ * it fully excluded getCaseDocuments rather than merely offering both.
  */
 function explicitCasePartyFieldRef(text: string): string | null {
   const m = text.match(
-    /\b(?:parties|part(?:y|ies)|contacts?|documents?|venue|insurance\s+carrier|carrier|applicant|defendant|attorney|coordinator|employer|adjuster)\b.{0,40}?\b(?:on|for)\b\s+(?:case\s+)?([A-Za-z]{1,3}\d{2,})\b/i,
+    /\b(?:parties|part(?:y|ies)|contacts?|venue|insurance\s+carrier|carrier|applicant|defendant|attorney|coordinator|employer|adjuster)\b.{0,40}?\b(?:on|for)\b\s+(?:case\s+)?([A-Za-z]{1,3}\d{2,})\b/i,
   );
   return m ? m[1] : null;
 }
