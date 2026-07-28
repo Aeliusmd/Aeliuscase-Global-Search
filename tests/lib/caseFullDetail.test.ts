@@ -413,15 +413,18 @@ describe('mapCaseFullDetail — events (Section 3, verified against real live da
 // checked all happened to have zero documents). Confirms uploadedBy really is
 // a plain string in production data, and real fileUrl values are full
 // uatapi.aeliuscase.com URLs.
+// docId/origin added 2026-07-28 after switching document links to the
+// GetFirmDocFile-backed download proxy — real shape confirmed live via the
+// dashboard's own Preview-Document network call (compositeKey "{docId}_{origin}").
 const REAL_DOCUMENTS_FIXTURE = {
   documents: [
     {
-      id: 41494, name: 'Williams, Brandon Scan NOH 10.3.16', uploadedBy: 'Maryanne Olivas',
+      id: 41494, docId: 41494, origin: 3, name: 'Williams, Brandon Scan NOH 10.3.16', uploadedBy: 'Maryanne Olivas',
       uploadedDate: '2016-10-10T14:13:47',
       fileUrl: 'https://uatapi.aeliuscase.com/Data01/aeliuscase_rplaw_pr/CaseDocs/CaseDocFiles/3075/Williams, Brandon Scan NOH 10.3.16.pdf',
     },
     {
-      id: 40218, name: 'Williams, Brandon Scan Sub of Attny 9.8.16', uploadedBy: 'Jennette',
+      id: 40218, docId: 40218, origin: 1, name: 'Williams, Brandon Scan Sub of Attny 9.8.16', uploadedBy: 'Jennette',
       uploadedDate: '2016-09-12T11:56:12',
       fileUrl: 'https://uatapi.aeliuscase.com/Data01/aeliuscase_rplaw_pr/CaseDocs/CaseDocFiles/3075/Williams, Brandon Scan Sub of Attny 9.8.16.pdf',
     },
@@ -514,27 +517,52 @@ describe('mapCaseFullDetail — documents (Section 4, verified against real live
     expect(() => mapCaseFullDetail({ documents: [{}] })).not.toThrow();
   });
 
-  // Live 404 reproduced 2026-07-28: the raw fileUrl points directly at file
-  // storage, which the browser can't reach directly — the backend requires
-  // going through GET /api/Filehandling/GetFilByPath?filePath={raw url}
-  // instead (confirmed live against a currently-existing document, 200 OK).
-  it('wraps fileUrl through GetFilByPath when apiBaseUrl is provided', () => {
-    const data = mapCaseFullDetail(REAL_DOCUMENTS_FIXTURE, 'https://uatapi.aeliuscase.com');
+  // Live 401 reproduced 2026-07-28: every backend file endpoint (confirmed
+  // via the backend's own Swagger spec — global security requirement, no
+  // per-endpoint override, no query-string API-key alternative) requires a
+  // header-based Bearer JWT, which a plain browser link click can never
+  // attach. Document links now point at our own authenticated proxy
+  // (app/api/documents/download) instead, carrying the docId/origin
+  // (confirmed live to map to GetFirmDocFile's docId/docCategory params) and
+  // the current session id so the proxy can resolve the real token itself.
+  it('builds an ABSOLUTE download-proxy URL (docId + origin as docCategory + sessionId) when sessionId AND appOrigin are provided', () => {
+    const data = mapCaseFullDetail(REAL_DOCUMENTS_FIXTURE, 'session-abc', 'https://aeliuscase-global-search.vercel.app');
     expect(data.documents[0].fileUrl).toBe(
-      'https://uatapi.aeliuscase.com/api/Filehandling/GetFilByPath?filePath='
-      + encodeURIComponent('https://uatapi.aeliuscase.com/Data01/aeliuscase_rplaw_pr/CaseDocs/CaseDocFiles/3075/Williams, Brandon Scan NOH 10.3.16.pdf'),
+      'https://aeliuscase-global-search.vercel.app/api/documents/download?docId=41494&docCategory=3&sessionId=session-abc',
+    );
+    expect(data.documents[1].fileUrl).toBe(
+      'https://aeliuscase-global-search.vercel.app/api/documents/download?docId=40218&docCategory=1&sessionId=session-abc',
     );
   });
 
-  it('leaves fileUrl as the raw URL when apiBaseUrl is not provided (existing fixture tests rely on this)', () => {
+  // Live bug (2026-07-28): with a RELATIVE download url, the model itself
+  // invented a fake "https://your-domain.com/..." host when writing the
+  // markdown link — an always-broken link. Requiring appOrigin (not just
+  // sessionId) to build the link at all closes that gap: no appOrigin means
+  // no proxy link gets built, rather than risking a relative one.
+  it('falls back to the raw fileUrl when appOrigin is missing, even with a sessionId', () => {
+    const data = mapCaseFullDetail(REAL_DOCUMENTS_FIXTURE, 'session-abc');
+    expect(data.documents[0].fileUrl).toBe(
+      'https://uatapi.aeliuscase.com/Data01/aeliuscase_rplaw_pr/CaseDocs/CaseDocFiles/3075/Williams, Brandon Scan NOH 10.3.16.pdf',
+    );
+  });
+
+  it('leaves fileUrl as the raw URL when neither sessionId nor appOrigin is provided (existing fixture tests rely on this)', () => {
     const data = mapCaseFullDetail(REAL_DOCUMENTS_FIXTURE);
     expect(data.documents[0].fileUrl).toBe(
       'https://uatapi.aeliuscase.com/Data01/aeliuscase_rplaw_pr/CaseDocs/CaseDocFiles/3075/Williams, Brandon Scan NOH 10.3.16.pdf',
     );
   });
 
-  it('never wraps a null fileUrl', () => {
-    const data = mapCaseFullDetail({ documents: [{ id: 1 }] }, 'https://uatapi.aeliuscase.com');
+  it('falls back to the raw fileUrl when docId/origin are missing, even with sessionId and appOrigin', () => {
+    const data = mapCaseFullDetail({
+      documents: [{ id: 1, name: 'X.pdf', fileUrl: 'https://uatapi.aeliuscase.com/x.pdf' }],
+    }, 'session-abc', 'https://aeliuscase-global-search.vercel.app');
+    expect(data.documents[0].fileUrl).toBe('https://uatapi.aeliuscase.com/x.pdf');
+  });
+
+  it('never produces a fileUrl for a document with no raw fileUrl at all', () => {
+    const data = mapCaseFullDetail({ documents: [{ id: 1 }] }, 'session-abc', 'https://aeliuscase-global-search.vercel.app');
     expect(data.documents[0].fileUrl).toBeNull();
   });
 });

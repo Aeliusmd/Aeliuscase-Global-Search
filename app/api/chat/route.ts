@@ -620,6 +620,15 @@ export async function POST(req: Request) {
     return Response.json({ error: 'Authentication required.' }, { status: 401 });
   }
   const jwtToken = auth.token;
+  // Not in CLIENT_IDENTITY_HEADERS, so middleware.ts leaves it on the request
+  // untouched — forwarded into document fileUrls so the download proxy
+  // (app/api/documents/download) can resolve the real token server-side.
+  const sessionId = req.headers.get('x-session-id') ?? undefined;
+  // This app's own scheme+host, from the actual incoming request — used to
+  // build an ABSOLUTE document download URL. A relative one let the model
+  // invent a wrong fake host when writing the markdown link itself (live
+  // bug, 2026-07-28) — an always-broken link.
+  const appOrigin = new URL(req.url).origin;
 
   if (!apiBaseUrl) {
     console.error('[/api/chat] Missing API_BASE_URL');
@@ -936,7 +945,7 @@ Re-send every prior filter above (with the same values) plus the new one. Only d
     // Expose ONLY getCaseFullDetail — see comprehensiveCaseDetailQuestion's doc
     // comment for why getCaseParties must not be offered as an alternative here.
     const reg = buildToolRegistry({
-      apiBaseUrl, jwtToken, enforcedSearchType, enforcedLabel,
+      apiBaseUrl, jwtToken, sessionId, appOrigin, enforcedSearchType, enforcedLabel,
       personSignal, personName, allowedFilterKeys, resolvedDateRange, resolvedRoleSlot,
     });
     const def = reg.get('getCaseFullDetail')?.definition;
@@ -946,7 +955,7 @@ Re-send every prior filter above (with the same values) plus the new one. Only d
   } else if (partiesFollowUpRef) {
     // Expose ONLY getCaseParties so the model can't fall back to a filter tool.
     const reg = buildToolRegistry({
-      apiBaseUrl, jwtToken, enforcedSearchType, enforcedLabel,
+      apiBaseUrl, jwtToken, sessionId, appOrigin, enforcedSearchType, enforcedLabel,
       personSignal, personName, allowedFilterKeys, resolvedDateRange, resolvedRoleSlot,
     });
     const def = reg.get('getCaseParties')?.definition;
@@ -957,7 +966,7 @@ Re-send every prior filter above (with the same values) plus the new one. Only d
     // Expose ONLY the one Phase-2 tool the follow-up is about, with the case
     // it's anaphoric to — see anaphoricPhase2Tool's doc comment.
     const reg = buildToolRegistry({
-      apiBaseUrl, jwtToken, enforcedSearchType, enforcedLabel,
+      apiBaseUrl, jwtToken, sessionId, appOrigin, enforcedSearchType, enforcedLabel,
       personSignal, personName, allowedFilterKeys, resolvedDateRange, resolvedRoleSlot,
     });
     const def = reg.get(phase2FollowUpTool)?.definition;
@@ -967,7 +976,7 @@ Re-send every prior filter above (with the same values) plus the new one. Only d
   } else if (venueOfCaseId) {
     // "cases in that venue" — force combinedSearch with the resolved venueId.
     const reg = buildToolRegistry({
-      apiBaseUrl, jwtToken, enforcedSearchType, enforcedLabel,
+      apiBaseUrl, jwtToken, sessionId, appOrigin, enforcedSearchType, enforcedLabel,
       personSignal, personName, allowedFilterKeys, resolvedDateRange, resolvedRoleSlot,
     });
     const def = reg.get('combinedSearch')?.definition;
@@ -978,7 +987,7 @@ Re-send every prior filter above (with the same values) plus the new one. Only d
     selectedTools = selectToolsForDomains(activeDomains, {
       message: classifyText,
       registry: buildToolRegistry({
-        apiBaseUrl, jwtToken, enforcedSearchType, enforcedLabel,
+        apiBaseUrl, jwtToken, sessionId, appOrigin, enforcedSearchType, enforcedLabel,
         personSignal, personName, allowedFilterKeys, resolvedDateRange, resolvedRoleSlot,
       }),
       intents,

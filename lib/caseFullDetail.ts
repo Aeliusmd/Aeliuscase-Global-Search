@@ -70,8 +70,11 @@ const cache = new Map<string, CacheEntry>();
 const CACHE_TTL_MS = 3 * 60 * 1000;
 const CACHE_MAX_SIZE = 20;
 
-function cacheKey(jwtToken: string, identifier: string): string {
-  return `${jwtToken}:${identifier}`;
+function cacheKey(jwtToken: string, identifier: string, sessionId: string | undefined): string {
+  // sessionId is part of the key (not just jwtToken+identifier) so a renewed
+  // session never serves a cached document list whose fileUrl links still
+  // embed the OLD sessionId (which the download proxy would then 401 on).
+  return `${jwtToken}:${identifier}:${sessionId ?? ''}`;
 }
 
 function cacheGet(key: string): CaseFullDetailData | null {
@@ -352,45 +355,70 @@ function mapEvents(topLevel: Raw): CaseEventSummary[] {
 }
 
 /**
- * The raw fileUrl points directly at the file storage path
- * (.../CaseDocFiles/{caseId}/{name}.pdf) — live-verified 2026-07-28 that this
- * direct path 404s from the browser; the backend requires going through
- * GET /api/Filehandling/GetFilByPath?filePath={the raw url} instead (real
- * PDF, 200 OK, confirmed against a currently-live document). encodeURIComponent
- * is required on the filePath value or the backend 500s.
+ * Neither the raw fileUrl (direct file-storage path) nor a bare
+ * GetFilByPath/GetFirmDocFile backend URL can be used as a document's link:
+ * - The raw path 404s straight from the browser — live-verified 2026-07-28.
+ * - Every backend file endpoint requires a header-based Bearer JWT (confirmed
+ *   via the backend's own Swagger spec: global `security` requirement, no
+ *   per-endpoint override, no query-string API-key alternative) — a plain
+ *   `<a href>` click can never attach that header, so ANY direct backend URL
+ *   401s regardless of encoding. Reproduced live against both GetFilByPath
+ *   and GetFirmDocFile.
  *
- * KNOWN BACKEND BUG (not fixable client-side — tried encodeURIComponent,
- * encodeURI, "+"-for-space, raw/unencoded, and double-encoding, all 500):
- * GetFilByPath itself throws a 500 for any filePath whose filename contains a
- * space or parenthesis, which real uploaded documents commonly do (e.g.
- * "Batch.Scan.New (1)_....pdf"). Only report this to the backend team — there
- * is no query-string encoding that works around it.
+ * The fix is our OWN authenticated proxy (app/api/documents/download) — the
+ * document link points there instead, carrying our opaque sessionId (the
+ * browser CAN navigate to a same-origin URL with a query string) so the
+ * route can resolve the real upstream token server-side and attach it itself
+ * when calling GetFirmDocFile.
+ *
+ * `docId`/`docCategory` map to the raw document's `docId`/`origin` fields —
+ * confirmed live 2026-07-28 via the dashboard's own Preview-Document network
+ * call: its `compositeKey` ("{docId}_{origin}", e.g. "478_3") matched the
+ * exact docId/docCategory pair that returned 200. NOT `id` (differs from
+ * `docId` for some rows) or `docCategoryId` (unrelated — always the same
+ * value across documents that need different docCategory values).
  */
-function wrapFileUrl(rawUrl: string | null, apiBaseUrl: string | undefined): string | null {
-  if (!rawUrl) return null;
-  if (!apiBaseUrl) return rawUrl;
-  return `${apiBaseUrl}/api/Filehandling/GetFilByPath?filePath=${encodeURIComponent(rawUrl)}`;
+function buildDownloadUrl(
+  docId: number | null,
+  origin: number | null,
+  sessionId: string | undefined,
+  appOrigin: string | undefined,
+): string | null {
+  // Live bug (2026-07-28): a relative URL here ("/api/documents/download?...")
+  // renders fine in our own custom markdown link parser, but the MODEL, when
+  // writing the markdown `[label](url)` itself, was observed inventing a fake
+  // "https://your-domain.com/..." host for it instead of leaving it relative
+  // — an always-broken link. Building a full absolute URL server-side (using
+  // the incoming request's own origin, so it's correct in every environment)
+  // removes the model's opportunity to guess wrong.
+  if (docId === null || origin === null || !sessionId || !appOrigin) return null;
+  return `${appOrigin}/api/documents/download?docId=${docId}&docCategory=${origin}&sessionId=${encodeURIComponent(sessionId)}`;
 }
 
 /** Live-verified 2026-07-19 against RP2021 (199 real documents). `uploadedBy`
  *  is a plain string in the real response, not the {id,name} object the
  *  original PM-request doc asked for — both are still checked defensively.
  *  Documents live at the top level, sibling of "case" (data.documents).
- *  `apiBaseUrl` is optional so existing direct-fixture tests (which assert
- *  the raw fileUrl unchanged) keep working — only fetchCaseFullDetail's real
- *  call site passes it, to wrap the link via GetFilByPath (see wrapFileUrl). */
-function mapDocuments(topLevel: Raw, apiBaseUrl?: string): CaseDocumentSummary[] {
+ *  `sessionId` is optional so existing direct-fixture tests (which assert
+ *  the raw fileUrl unchanged when it's absent) keep working — only
+ *  fetchCaseFullDetail's real call site passes it, to build the proxied
+ *  download link (see buildDownloadUrl). Falls back to the raw fileUrl when
+ *  sessionId is absent OR the row is missing docId/origin (defensive —
+ *  should not happen for a real document, but never worse than the old
+ *  raw-url behavior). */
+function mapDocuments(topLevel: Raw, sessionId?: string, appOrigin?: string): CaseDocumentSummary[] {
   const documents: Raw[] = topLevel?.documents ?? [];
   const out: CaseDocumentSummary[] = [];
   for (const d of documents) {
     if (d?.isDeleted === true) continue;
+    const rawFileUrl = str(d?.fileUrl) ?? str(d?.fileLocation);
     out.push({
       id: num(d?.id),
       name: str(d?.name) ?? str(d?.fileName),
       category: str(d?.category),
       uploadedBy: typeof d?.uploadedBy === 'string' ? str(d.uploadedBy) : str(d?.uploadedBy?.name),
       uploadedDate: str(d?.uploadedDate) ?? str(d?.uploadDate),
-      fileUrl: wrapFileUrl(str(d?.fileUrl) ?? str(d?.fileLocation), apiBaseUrl),
+      fileUrl: buildDownloadUrl(num(d?.docId), num(d?.origin), sessionId, appOrigin) ?? rawFileUrl,
     });
   }
   return out;
@@ -502,7 +530,7 @@ function mapAccounting(topLevel: Raw): CaseAccountingSummary {
   };
 }
 
-export function mapCaseFullDetail(topLevel: Raw, apiBaseUrl?: string): CaseFullDetailData {
+export function mapCaseFullDetail(topLevel: Raw, sessionId?: string, appOrigin?: string): CaseFullDetailData {
   const c: Raw = topLevel?.case ?? {};
   return {
     caseNumber: str(c.caseNumber),
@@ -529,7 +557,7 @@ export function mapCaseFullDetail(topLevel: Raw, apiBaseUrl?: string): CaseFullD
 
     tasks: mapTasks(topLevel),
     events: mapEvents(topLevel),
-    documents: mapDocuments(topLevel, apiBaseUrl),
+    documents: mapDocuments(topLevel, sessionId, appOrigin),
     notes: mapNotes(topLevel),
     activities: mapActivities(topLevel),
     accounting: mapAccounting(topLevel),
@@ -552,16 +580,26 @@ export interface FetchCaseFullDetailOpts {
   caseNumber?: string;
   caseId?: number;
   caseName?: string;
+  /** The current chat session's opaque id — embedded in each document's
+   *  fileUrl so the download proxy (app/api/documents/download) can resolve
+   *  the real upstream token server-side. Optional so non-chat callers
+   *  (tests, scripts) keep getting the raw fileUrl unchanged. */
+  sessionId?: string;
+  /** This app's own origin (scheme+host), used to build an ABSOLUTE download
+   *  URL — a relative one lets the model invent a wrong fake host when it
+   *  writes the markdown link itself (live bug, 2026-07-28). Optional for
+   *  the same reason as sessionId. */
+  appOrigin?: string;
 }
 
 export async function fetchCaseFullDetail(opts: FetchCaseFullDetailOpts): Promise<CaseFullDetailToolOutput> {
-  const { apiBaseUrl, jwtToken, caseNumber, caseId, caseName } = opts;
+  const { apiBaseUrl, jwtToken, caseNumber, caseId, caseName, sessionId, appOrigin } = opts;
   if (caseNumber === undefined && caseId === undefined && caseName === undefined) {
     return { success: false, error: 'Provide caseNumber, caseId, or caseName.' };
   }
 
   const identifier = caseNumber ?? caseName ?? `case-${caseId}`;
-  const key = cacheKey(jwtToken, identifier);
+  const key = cacheKey(jwtToken, identifier, sessionId);
   const cached = cacheGet(key);
   if (cached) return { success: true, data: cached };
 
@@ -599,7 +637,7 @@ export async function fetchCaseFullDetail(opts: FetchCaseFullDetailOpts): Promis
       return { success: false, error: `Case "${identifier}" not found.` };
     }
 
-    const mapped = mapCaseFullDetail(inner.data, apiBaseUrl);
+    const mapped = mapCaseFullDetail(inner.data, sessionId, appOrigin);
     cacheSet(key, mapped);
     return { success: true, data: mapped };
   } catch (err: unknown) {

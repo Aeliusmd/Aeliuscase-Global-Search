@@ -32,6 +32,12 @@ import type { RoleSlotResolution } from '@/lib/roleSlots';
 export interface RegistryDeps {
   apiBaseUrl: string;
   jwtToken: string;
+  /** The current chat session's opaque id — forwarded to the Phase-2 tools so
+   *  getCaseDocuments' document links can be built through the authenticated
+   *  download proxy (see lib/caseFullDetail.ts's buildDownloadUrl). */
+  sessionId?: string;
+  /** This app's own origin — see FetchCaseFullDetailOpts.appOrigin's doc comment. */
+  appOrigin?: string;
   enforcedSearchType: number;
   enforcedLabel: string;
   /** Staff/applicant/none signal from the user's words — governs combinedSearch name routing. */
@@ -53,11 +59,12 @@ export interface RegistryDeps {
 
 export function buildToolRegistry(deps: RegistryDeps): Map<string, ToolEntry> {
   const {
-    apiBaseUrl, jwtToken, enforcedSearchType, enforcedLabel,
+    apiBaseUrl, jwtToken, sessionId, appOrigin, enforcedSearchType, enforcedLabel,
     personSignal = 'none', personName = null, allowedFilterKeys, resolvedDateRange = null,
     resolvedRoleSlot = null,
   } = deps;
   const fd = { apiBaseUrl, jwtToken, resolvedDateRange };
+  const caseDetailDeps = { apiBaseUrl, jwtToken, sessionId, appOrigin };
 
   return new Map<string, ToolEntry>([
     ['searchCases', {
@@ -123,31 +130,31 @@ export function buildToolRegistry(deps: RegistryDeps): Map<string, ToolEntry> {
       intentTags: [],   // selected specially when 2+ filter intents are present
     }],
     ['getCaseFullDetail', {
-      definition: makeGetCaseFullDetailTool({ apiBaseUrl, jwtToken }),
+      definition: makeGetCaseFullDetailTool(caseDetailDeps),
       intentTags: [],   // selected via lib/domains/caseDetail.ts, not intentRouter
     }],
     ['getCaseTasks', {
-      definition: makeGetCaseTasksTool({ apiBaseUrl, jwtToken }),
+      definition: makeGetCaseTasksTool(caseDetailDeps),
       intentTags: [],   // selected via lib/domains/tasks.ts, not intentRouter
     }],
     ['getCaseEvents', {
-      definition: makeGetCaseEventsTool({ apiBaseUrl, jwtToken }),
+      definition: makeGetCaseEventsTool(caseDetailDeps),
       intentTags: [],   // selected via lib/domains/events.ts, not intentRouter
     }],
     ['getCaseDocuments', {
-      definition: makeGetCaseDocumentsTool({ apiBaseUrl, jwtToken }),
+      definition: makeGetCaseDocumentsTool(caseDetailDeps),
       intentTags: [],   // selected via lib/domains/documents.ts, not intentRouter
     }],
     ['getCaseNotes', {
-      definition: makeGetCaseNotesTool({ apiBaseUrl, jwtToken }),
+      definition: makeGetCaseNotesTool(caseDetailDeps),
       intentTags: [],   // selected via lib/domains/notes.ts, not intentRouter
     }],
     ['getCaseActivities', {
-      definition: makeGetCaseActivitiesTool({ apiBaseUrl, jwtToken }),
+      definition: makeGetCaseActivitiesTool(caseDetailDeps),
       intentTags: [],   // selected via lib/domains/activities.ts, not intentRouter
     }],
     ['getCaseAccounting', {
-      definition: makeGetCaseAccountingTool({ apiBaseUrl, jwtToken }),
+      definition: makeGetCaseAccountingTool(caseDetailDeps),
       intentTags: [],   // selected via lib/domains/accounting.ts, not intentRouter
     }],
   ]);
