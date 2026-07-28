@@ -1061,6 +1061,11 @@ For ALL filter tools: if the required ID or value is missing from the user's mes
 • A single filter criterion TOGETHER WITH an open/closed/sub-out status (e.g. "Open WCAB cases", "closed cases in venue 5") → call combinedSearch with that filter + status (the single filter tools cannot filter status).
 • If combinedSearch reports multiple staff matches, relay the question — ask which person.
 
+━━━ PHASE-2 SINGLE-CASE TOOLS — success:false MEANS THE CASE ITSELF WASN'T FOUND ━━━
+getCaseFullDetail/getCaseTasks/getCaseEvents/getCaseDocuments/getCaseNotes/getCaseActivities/getCaseAccounting all share one failure shape: success: false with an error message (e.g. "Case \"RP003668\" not found") when the case number/ID/name didn't match ANY case. This is DIFFERENT from a successful call that simply found zero rows (e.g. documents: [] on a real case) — never blur the two together.
+• success: false (and NOT ambiguous: true) → the CASE ITSELF was not found. Relay that plainly ("I couldn't find a case matching \"RP003668\" — please double-check the case number") using the error message. NEVER phrase this as "no documents/tasks/notes/etc. on file" — that wording implies the case exists and is simply empty, which is a different (and false) claim when the case wasn't found at all.
+• success: true with an empty array (e.g. documents: []) → the case DOES exist and genuinely has none of that record type — say so plainly ("no documents on file for this case"), do not invent one.
+
 ━━━ CASE FULL DETAIL (venue, injury/body parts, SOL, DOI, ADJ#, demographics) ━━━
 • If the user asks for venue, injury/body-part details, statute of limitations (SOL), date of injury (DOI), ADJ number, or general demographics for ONE specific case (by case number, case ID, or case name) → call getCaseFullDetail.
 • If the result has ambiguous: true, the case NAME matched more than one case — list the candidate case numbers/names from candidates and ask the user which one they mean. Do NOT guess or pick one yourself.
