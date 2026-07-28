@@ -61,12 +61,25 @@ interface MessageBubbleProps {
 function renderInline(text: string): string {
   return text
     .replace(/\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g, (_match, label: string, url: string) => {
-      // Real document fileUrls can contain literal spaces (e.g.
-      // ".../fax-confirmation - Insurance .pdf") — encodeURI turns those into
-      // %20 so the href is valid, without touching the already-safe rest of
-      // the URL. `"` is escaped separately so the URL can't break out of the
-      // href attribute.
-      const safeUrl = encodeURI(url).replace(/"/g, '%22');
+      // Real document fileUrls arrive in BOTH shapes depending on the
+      // document — some with a literal space (".../fax-confirmation -
+      // Insurance .pdf"), some already percent-encoded (".../E-file%20Amended
+      // %20application...") — live 404 reproduced 2026-07-28: a plain
+      // encodeURI() on an ALREADY-encoded url double-encodes it ("%20" ->
+      // "%2520", since encodeURI does not treat "%" as a safe character),
+      // producing a broken link the backend file server 404s on. Decoding
+      // first makes this idempotent regardless of the input's original
+      // encoding state — a raw url with spaces round-trips through decodeURI
+      // unchanged, an already-encoded url gets un-encoded then re-encoded back
+      // to the same single-encoded form. Falls back to the raw url if
+      // decodeURI throws on a malformed sequence, same as encodeURI failing.
+      let safeUrl: string;
+      try {
+        safeUrl = encodeURI(decodeURI(url));
+      } catch {
+        safeUrl = url;
+      }
+      safeUrl = safeUrl.replace(/"/g, '%22');
       return `<a href="${safeUrl}" target="_blank" rel="noopener noreferrer" style="color:#6763AC;text-decoration:underline;">${label}</a>`;
     })
     .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
