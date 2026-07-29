@@ -12,7 +12,10 @@ export function makeGetCasePartiesTool(deps: PartiesDeps) {
   const { apiBaseUrl, jwtToken } = deps;
   return tool({
     description:
-      'Fetch all parties and their documents for a specific AeliusCase case. Call this when the user asks about parties, contacts, or documents for a specific case number or case ID.',
+      'Fetch all parties and their documents for a specific AeliusCase case. Call this when the user asks about parties, contacts, or documents for a specific case number or case ID. ' +
+      'The result includes both `parties` (every raw row) and `partyGroups` (rows collapsed by partyType, with a count and up to 5 unique names). ' +
+      'When listing "the parties" generally, use partyGroups and show each type as "TypeName (N)" — e.g. "Applicant Attorney (12)" — rather than listing all N rows individually; some real cases have a dozen+ near-duplicate rows of one type. ' +
+      'Still answer a specific-field question (e.g. "who is the insurance carrier") by name, from whichever party row actually has that type.',
     inputSchema: zodSchema(
       z
         .object({

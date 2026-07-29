@@ -1,4 +1,4 @@
-import type { CaseParty, CasePartyDoc, PartiesToolOutput } from '@/types/caseParties';
+import type { CaseParty, CasePartyDoc, CasePartyGroup, PartiesToolOutput } from '@/types/caseParties';
 
 interface FetchCasePartiesOpts {
   apiBaseUrl: string;
@@ -74,6 +74,46 @@ export async function resolveCaseVenueId(
   }
 }
 
+const GROUP_NAME_CAP = 5;
+
+/**
+ * Collapses parties with the same partyType into one summary row — see
+ * CasePartyGroup's doc comment for why (live UAT case with 12+ near-duplicate
+ * "Applicant Attorney" rows). Order follows first appearance in `parties`;
+ * names are deduped and capped so one messy party type can't blow up the
+ * response even when the row count is large.
+ */
+function groupParties(parties: CaseParty[]): CasePartyGroup[] {
+  const order: string[] = [];
+  const byType = new Map<string, { count: number; nameSet: Set<string>; names: string[] }>();
+
+  for (const party of parties) {
+    const type = party.partyType || 'Unknown';
+    let group = byType.get(type);
+    if (!group) {
+      group = { count: 0, nameSet: new Set(), names: [] };
+      byType.set(type, group);
+      order.push(type);
+    }
+    group.count += 1;
+    const name = party.partyName.trim();
+    if (name && !group.nameSet.has(name)) {
+      group.nameSet.add(name);
+      group.names.push(name);
+    }
+  }
+
+  return order.map((type) => {
+    const group = byType.get(type)!;
+    return {
+      partyType: type,
+      count: group.count,
+      names: group.names.slice(0, GROUP_NAME_CAP),
+      truncated: group.names.length > GROUP_NAME_CAP,
+    };
+  });
+}
+
 export async function fetchCaseParties(
   opts: FetchCasePartiesOpts,
 ): Promise<PartiesToolOutput> {
@@ -142,6 +182,7 @@ export async function fetchCaseParties(
       caseRef,
       parties,
       partyDocs,
+      partyGroups: groupParties(parties),
     };
   } catch (err: unknown) {
     const message =
