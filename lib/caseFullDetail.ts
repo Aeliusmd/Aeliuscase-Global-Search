@@ -70,11 +70,8 @@ const cache = new Map<string, CacheEntry>();
 const CACHE_TTL_MS = 3 * 60 * 1000;
 const CACHE_MAX_SIZE = 20;
 
-function cacheKey(jwtToken: string, identifier: string, sessionId: string | undefined): string {
-  // sessionId is part of the key (not just jwtToken+identifier) so a renewed
-  // session never serves a cached document list whose fileUrl links still
-  // embed the OLD sessionId (which the download proxy would then 401 on).
-  return `${jwtToken}:${identifier}:${sessionId ?? ''}`;
+function cacheKey(jwtToken: string, identifier: string): string {
+  return `${jwtToken}:${identifier}`;
 }
 
 function cacheGet(key: string): CaseFullDetailData | null {
@@ -365,11 +362,17 @@ function mapEvents(topLevel: Raw): CaseEventSummary[] {
  *   401s regardless of encoding. Reproduced live against both GetFilByPath
  *   and GetFirmDocFile.
  *
- * The fix is our OWN authenticated proxy (app/api/documents/download) — the
- * document link points there instead, carrying our opaque sessionId (the
- * browser CAN navigate to a same-origin URL with a query string) so the
- * route can resolve the real upstream token server-side and attach it itself
- * when calling GetFirmDocFile.
+ * The fix is our OWN authenticated proxy (app/api/documents/download). The
+ * URL built here carries ONLY docId/docCategory — no session identifier —
+ * so it's stable forever once stored in a chat message. Auth happens at
+ * CLICK TIME instead: MessageBubble.tsx intercepts a click on this link and
+ * fetches it with the browser's CURRENT live X-Session-Id header (see
+ * middleware.ts, now covering this route), the same pattern
+ * CaseResultList.tsx already uses for pagination. Live bug fixed 2026-07-29
+ * — the earlier design embedded the sessionId IN the URL, which is only
+ * valid for that session's ~1h lifetime: a document link opened the next day
+ * (a perfectly normal thing to do with chat history) 401'd even though the
+ * user's CURRENT session was fine.
  *
  * GetFirmDocFile's `docCategory` is the raw row's `origin` field (NOT
  * `docCategoryId`, which is unrelated — it holds the same value across
@@ -386,32 +389,31 @@ function mapEvents(topLevel: Raw): CaseEventSummary[] {
 function buildDownloadUrl(
   id: number | null,
   origin: number | null,
-  sessionId: string | undefined,
   appOrigin: string | undefined,
 ): string | null {
-  // Live bug (2026-07-28): a relative URL here ("/api/documents/download?...")
-  // renders fine in our own custom markdown link parser, but the MODEL, when
-  // writing the markdown `[label](url)` itself, was observed inventing a fake
-  // "https://your-domain.com/..." host for it instead of leaving it relative
-  // — an always-broken link. Building a full absolute URL server-side (using
-  // the incoming request's own origin, so it's correct in every environment)
-  // removes the model's opportunity to guess wrong.
-  if (id === null || origin === null || !sessionId || !appOrigin) return null;
-  return `${appOrigin}/api/documents/download?docId=${id}&docCategory=${origin}&sessionId=${encodeURIComponent(sessionId)}`;
+  // A relative URL here ("/api/documents/download?...") renders fine in our
+  // own custom markdown link parser, but the MODEL, when writing the
+  // markdown `[label](url)` itself, was live-observed (2026-07-28) inventing
+  // a fake "https://your-domain.com/..." host for it instead of leaving it
+  // relative — an always-broken link. Building a full absolute URL
+  // server-side (using the incoming request's own origin, so it's correct
+  // in every environment) removes the model's opportunity to guess wrong.
+  if (id === null || origin === null || !appOrigin) return null;
+  return `${appOrigin}/api/documents/download?docId=${id}&docCategory=${origin}`;
 }
 
 /** Live-verified 2026-07-19 against RP2021 (199 real documents). `uploadedBy`
  *  is a plain string in the real response, not the {id,name} object the
  *  original PM-request doc asked for — both are still checked defensively.
  *  Documents live at the top level, sibling of "case" (data.documents).
- *  `sessionId` is optional so existing direct-fixture tests (which assert
+ *  `appOrigin` is optional so existing direct-fixture tests (which assert
  *  the raw fileUrl unchanged when it's absent) keep working — only
  *  fetchCaseFullDetail's real call site passes it, to build the proxied
  *  download link (see buildDownloadUrl). Falls back to the raw fileUrl when
- *  sessionId/appOrigin is absent OR the row is missing id/origin (defensive —
- *  should not happen for a real document, but never worse than the old
- *  raw-url behavior). */
-function mapDocuments(topLevel: Raw, sessionId?: string, appOrigin?: string): CaseDocumentSummary[] {
+ *  appOrigin is absent OR the row is missing id/origin (defensive — should
+ *  not happen for a real document, but never worse than the old raw-url
+ *  behavior). */
+function mapDocuments(topLevel: Raw, appOrigin?: string): CaseDocumentSummary[] {
   const documents: Raw[] = topLevel?.documents ?? [];
   const out: CaseDocumentSummary[] = [];
   for (const d of documents) {
@@ -423,7 +425,7 @@ function mapDocuments(topLevel: Raw, sessionId?: string, appOrigin?: string): Ca
       category: str(d?.category),
       uploadedBy: typeof d?.uploadedBy === 'string' ? str(d.uploadedBy) : str(d?.uploadedBy?.name),
       uploadedDate: str(d?.uploadedDate) ?? str(d?.uploadDate),
-      fileUrl: buildDownloadUrl(num(d?.id), num(d?.origin), sessionId, appOrigin) ?? rawFileUrl,
+      fileUrl: buildDownloadUrl(num(d?.id), num(d?.origin), appOrigin) ?? rawFileUrl,
     });
   }
   return out;
@@ -535,7 +537,7 @@ function mapAccounting(topLevel: Raw): CaseAccountingSummary {
   };
 }
 
-export function mapCaseFullDetail(topLevel: Raw, sessionId?: string, appOrigin?: string): CaseFullDetailData {
+export function mapCaseFullDetail(topLevel: Raw, appOrigin?: string): CaseFullDetailData {
   const c: Raw = topLevel?.case ?? {};
   return {
     caseNumber: str(c.caseNumber),
@@ -562,7 +564,7 @@ export function mapCaseFullDetail(topLevel: Raw, sessionId?: string, appOrigin?:
 
     tasks: mapTasks(topLevel),
     events: mapEvents(topLevel),
-    documents: mapDocuments(topLevel, sessionId, appOrigin),
+    documents: mapDocuments(topLevel, appOrigin),
     notes: mapNotes(topLevel),
     activities: mapActivities(topLevel),
     accounting: mapAccounting(topLevel),
@@ -624,26 +626,22 @@ export interface FetchCaseFullDetailOpts {
   caseNumber?: string;
   caseId?: number;
   caseName?: string;
-  /** The current chat session's opaque id — embedded in each document's
-   *  fileUrl so the download proxy (app/api/documents/download) can resolve
-   *  the real upstream token server-side. Optional so non-chat callers
-   *  (tests, scripts) keep getting the raw fileUrl unchanged. */
-  sessionId?: string;
   /** This app's own origin (scheme+host), used to build an ABSOLUTE download
-   *  URL — a relative one lets the model invent a wrong fake host when it
-   *  writes the markdown link itself (live bug, 2026-07-28). Optional for
-   *  the same reason as sessionId. */
+   *  URL for each document — a relative one lets the model invent a wrong
+   *  fake host when it writes the markdown link itself (live bug,
+   *  2026-07-28). Optional so non-chat callers (tests, scripts) keep getting
+   *  the raw fileUrl unchanged. */
   appOrigin?: string;
 }
 
 export async function fetchCaseFullDetail(opts: FetchCaseFullDetailOpts): Promise<CaseFullDetailToolOutput> {
-  const { apiBaseUrl, jwtToken, caseNumber, caseId, caseName, sessionId, appOrigin } = opts;
+  const { apiBaseUrl, jwtToken, caseNumber, caseId, caseName, appOrigin } = opts;
   if (caseNumber === undefined && caseId === undefined && caseName === undefined) {
     return { success: false, error: 'Provide caseNumber, caseId, or caseName.' };
   }
 
   const identifier = caseNumber ?? caseName ?? `case-${caseId}`;
-  const key = cacheKey(jwtToken, identifier, sessionId);
+  const key = cacheKey(jwtToken, identifier);
   const cached = cacheGet(key);
   if (cached) return { success: true, data: cached };
 
@@ -681,7 +679,7 @@ export async function fetchCaseFullDetail(opts: FetchCaseFullDetailOpts): Promis
       return { success: false, error: `Case "${identifier}" not found.` };
     }
 
-    const mapped = mapCaseFullDetail(inner.data, sessionId, appOrigin);
+    const mapped = mapCaseFullDetail(inner.data, appOrigin);
 
     // GetCaseFullDetail's OWN documents array is unreliable — live-verified
     // 2026-07-28 that case AE-00224 (internal id 224) returns documents: []
@@ -701,7 +699,7 @@ export async function fetchCaseFullDetail(opts: FetchCaseFullDetailOpts): Promis
     const internalCaseId = num(inner.data?.case?.id);
     if (internalCaseId !== null) {
       const items = await fetchCaseDocsList(apiBaseUrl, jwtToken, internalCaseId);
-      if (items) mapped.documents = mapDocuments({ documents: items }, sessionId, appOrigin);
+      if (items) mapped.documents = mapDocuments({ documents: items }, appOrigin);
     }
 
     cacheSet(key, mapped);

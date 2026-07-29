@@ -76,5 +76,6 @@ export const config = {
     '/api/chat/title',
     '/api/cases/:path*',
     '/api/conversations/:path*',
+    '/api/documents/:path*',
   ],
 };

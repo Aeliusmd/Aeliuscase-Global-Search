@@ -32,10 +32,6 @@ import type { RoleSlotResolution } from '@/lib/roleSlots';
 export interface RegistryDeps {
   apiBaseUrl: string;
   jwtToken: string;
-  /** The current chat session's opaque id — forwarded to the Phase-2 tools so
-   *  getCaseDocuments' document links can be built through the authenticated
-   *  download proxy (see lib/caseFullDetail.ts's buildDownloadUrl). */
-  sessionId?: string;
   /** This app's own origin — see FetchCaseFullDetailOpts.appOrigin's doc comment. */
   appOrigin?: string;
   enforcedSearchType: number;
@@ -59,12 +55,12 @@ export interface RegistryDeps {
 
 export function buildToolRegistry(deps: RegistryDeps): Map<string, ToolEntry> {
   const {
-    apiBaseUrl, jwtToken, sessionId, appOrigin, enforcedSearchType, enforcedLabel,
+    apiBaseUrl, jwtToken, appOrigin, enforcedSearchType, enforcedLabel,
     personSignal = 'none', personName = null, allowedFilterKeys, resolvedDateRange = null,
     resolvedRoleSlot = null,
   } = deps;
   const fd = { apiBaseUrl, jwtToken, resolvedDateRange };
-  const caseDetailDeps = { apiBaseUrl, jwtToken, sessionId, appOrigin };
+  const caseDetailDeps = { apiBaseUrl, jwtToken, appOrigin };
 
   return new Map<string, ToolEntry>([
     ['searchCases', {

@@ -525,12 +525,12 @@ describe('mapCaseFullDetail — documents (Section 4, verified against real live
   // header-based Bearer JWT, which a plain browser link click can never
   // attach. Document links now point at our own authenticated proxy
   // (app/api/documents/download) instead, carrying the docId/origin
-  // (confirmed live to map to GetFirmDocFile's docId/docCategory params) and
-  // the current session id so the proxy can resolve the real token itself.
-  it('builds an ABSOLUTE download-proxy URL from the row id + origin, when sessionId AND appOrigin are provided', () => {
-    const data = mapCaseFullDetail(REAL_DOCUMENTS_FIXTURE, 'session-abc', 'https://aeliuscase-global-search.vercel.app');
+  // (confirmed live to map to GetFirmDocFile's docId/docCategory params).
+  // No session id in the URL — see the next describe block for why.
+  it('builds an ABSOLUTE download-proxy URL from the row id + origin, when appOrigin is provided', () => {
+    const data = mapCaseFullDetail(REAL_DOCUMENTS_FIXTURE, 'https://aeliuscase-global-search.vercel.app');
     expect(data.documents[0].fileUrl).toBe(
-      'https://aeliuscase-global-search.vercel.app/api/documents/download?docId=41494&docCategory=3&sessionId=session-abc',
+      'https://aeliuscase-global-search.vercel.app/api/documents/download?docId=41494&docCategory=3',
     );
   });
 
@@ -539,41 +539,47 @@ describe('mapCaseFullDetail — documents (Section 4, verified against real live
   // (607/405) while returning real PDFs for their id (123/111). Using the
   // row's own `id` is what makes both origins work.
   it('uses the row id (not docId) when they differ, as origin=1 rows require', () => {
-    const data = mapCaseFullDetail(REAL_DOCUMENTS_FIXTURE, 'session-abc', 'https://aeliuscase-global-search.vercel.app');
+    const data = mapCaseFullDetail(REAL_DOCUMENTS_FIXTURE, 'https://aeliuscase-global-search.vercel.app');
     expect(data.documents[1].fileUrl).toBe(
-      'https://aeliuscase-global-search.vercel.app/api/documents/download?docId=123&docCategory=1&sessionId=session-abc',
+      'https://aeliuscase-global-search.vercel.app/api/documents/download?docId=123&docCategory=1',
     );
   });
 
   // Live bug (2026-07-28): with a RELATIVE download url, the model itself
   // invented a fake "https://your-domain.com/..." host when writing the
-  // markdown link — an always-broken link. Requiring appOrigin (not just
-  // sessionId) to build the link at all closes that gap: no appOrigin means
-  // no proxy link gets built, rather than risking a relative one.
-  it('falls back to the raw fileUrl when appOrigin is missing, even with a sessionId', () => {
-    const data = mapCaseFullDetail(REAL_DOCUMENTS_FIXTURE, 'session-abc');
-    expect(data.documents[0].fileUrl).toBe(
-      'https://uatapi.aeliuscase.com/Data01/aeliuscase_rplaw_pr/CaseDocs/CaseDocFiles/3075/Williams, Brandon Scan NOH 10.3.16.pdf',
-    );
-  });
-
-  it('leaves fileUrl as the raw URL when neither sessionId nor appOrigin is provided (existing fixture tests rely on this)', () => {
+  // markdown link — an always-broken link. Requiring appOrigin to build the
+  // link at all closes that gap: no appOrigin means no proxy link gets
+  // built, rather than risking a relative one.
+  it('leaves fileUrl as the raw URL when appOrigin is not provided (existing fixture tests rely on this)', () => {
     const data = mapCaseFullDetail(REAL_DOCUMENTS_FIXTURE);
     expect(data.documents[0].fileUrl).toBe(
       'https://uatapi.aeliuscase.com/Data01/aeliuscase_rplaw_pr/CaseDocs/CaseDocFiles/3075/Williams, Brandon Scan NOH 10.3.16.pdf',
     );
   });
 
-  it('falls back to the raw fileUrl when id/origin are missing, even with sessionId and appOrigin', () => {
+  it('falls back to the raw fileUrl when id/origin are missing, even with appOrigin', () => {
     const data = mapCaseFullDetail({
       documents: [{ id: 1, name: 'X.pdf', fileUrl: 'https://uatapi.aeliuscase.com/x.pdf' }],
-    }, 'session-abc', 'https://aeliuscase-global-search.vercel.app');
+    }, 'https://aeliuscase-global-search.vercel.app');
     expect(data.documents[0].fileUrl).toBe('https://uatapi.aeliuscase.com/x.pdf');
   });
 
   it('never produces a fileUrl for a document with no raw fileUrl at all', () => {
-    const data = mapCaseFullDetail({ documents: [{ id: 1 }] }, 'session-abc', 'https://aeliuscase-global-search.vercel.app');
+    const data = mapCaseFullDetail({ documents: [{ id: 1 }] }, 'https://aeliuscase-global-search.vercel.app');
     expect(data.documents[0].fileUrl).toBeNull();
+  });
+});
+
+// Live bug fixed 2026-07-29: the download link previously embedded the chat
+// session's opaque id in its own query string, so opening a document link
+// even a day later 401'd — the session (~1h TTL) had long expired, even
+// though the user's CURRENT session was perfectly valid. Confirms the link
+// itself carries no session-specific state, so it can never go stale.
+describe('mapCaseFullDetail — documents never embed a session id (fixed 2026-07-29)', () => {
+  it('the download url has no sessionId param, regardless of case sensitivity in the query string', () => {
+    const data = mapCaseFullDetail(REAL_DOCUMENTS_FIXTURE, 'https://aeliuscase-global-search.vercel.app');
+    expect(data.documents[0].fileUrl).not.toContain('sessionId');
+    expect(data.documents[0].fileUrl).not.toContain('session');
   });
 });
 

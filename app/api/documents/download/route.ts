@@ -1,4 +1,4 @@
-import { getSession } from '@/lib/auth/session';
+import { getRequestAuth } from '@/lib/auth/request';
 
 /**
  * Authenticated document-download proxy.
@@ -10,40 +10,35 @@ import { getSession } from '@/lib/auth/session';
  * link can't point at the backend directly — live-reproduced 2026-07-28 as a
  * 401 on both GetFilByPath and GetFirmDocFile when hit without the header.
  *
- * This route is the fix: the chat UI's document link points HERE (a same-
- * origin route the browser CAN navigate to), carrying our own opaque
- * sessionId in the query string (the same one already used as the
- * X-Session-Id header elsewhere) instead of a header. Server-side, we look
- * up the real upstream token for that session and attach it ourselves when
- * calling GetFirmDocFile, then stream the file back.
+ * Registered in middleware.ts's matcher like every other authenticated
+ * route — it resolves X-Session-Id into the standard x-aelius-* identity
+ * headers, which getRequestAuth() reads here exactly like app/api/chat does.
  *
- * Deliberately NOT registered in middleware.ts's matcher — that middleware
- * expects the session id as a header (fine for our own fetch() calls, not
- * for a plain link click), so this route resolves the session itself
- * instead, reading it from the query string.
+ * The document link itself carries ONLY docId/docCategory, no session id —
+ * live bug fixed 2026-07-29: an earlier version embedded the sessionId IN
+ * the link's query string, which is only valid for that session's ~1h
+ * lifetime, so a link opened even a day later (completely normal for chat
+ * history) 401'd even with a perfectly valid CURRENT session. Auth now
+ * happens at CLICK TIME instead: MessageBubble.tsx intercepts the click and
+ * fetches this route with the browser's CURRENT live X-Session-Id header —
+ * the same pattern CaseResultList.tsx already uses for pagination — so the
+ * link never goes stale.
  *
- * docId/docCategory map to the raw document's `docId`/`origin` fields
- * (confirmed live 2026-07-28 via the dashboard's own Preview-Document
- * network call: compositeKey "{docId}_{origin}" matched the exact
- * docId/docCategory pair that returned 200 — NOT `id` or `docCategoryId`,
- * which are different fields entirely).
+ * docId/docCategory map to the raw document row's `id`/`origin` fields (see
+ * lib/caseFullDetail.ts's buildDownloadUrl doc comment for how those were
+ * confirmed live, including the origin=1 id-vs-docId gotcha).
  */
 export async function GET(req: Request): Promise<Response> {
+  const auth = getRequestAuth(req);
+  if (!auth) {
+    return Response.json({ error: 'Authentication required or session expired.' }, { status: 401 });
+  }
+
   const { searchParams } = new URL(req.url);
-  const sessionId = searchParams.get('sessionId');
   const docId = searchParams.get('docId');
   const docCategory = searchParams.get('docCategory');
-
-  if (!sessionId) {
-    return Response.json({ error: 'Missing sessionId.' }, { status: 400 });
-  }
   if (!docId || !/^\d+$/.test(docId) || !docCategory || !/^\d+$/.test(docCategory)) {
     return Response.json({ error: 'Missing or invalid docId/docCategory.' }, { status: 400 });
-  }
-
-  const session = await getSession(sessionId);
-  if (!session) {
-    return Response.json({ error: 'Authentication required or session expired.' }, { status: 401 });
   }
 
   const apiBaseUrl = process.env.API_BASE_URL;
@@ -56,7 +51,7 @@ export async function GET(req: Request): Promise<Response> {
     upstream = await fetch(
       `${apiBaseUrl}/api/Filehandling/GetFirmDocFile?docId=${docId}&docCategory=${docCategory}`,
       {
-        headers: { Authorization: `Bearer ${session.token}`, Accept: '*/*' },
+        headers: { Authorization: `Bearer ${auth.token}`, Accept: '*/*' },
         cache: 'no-store',
       },
     );

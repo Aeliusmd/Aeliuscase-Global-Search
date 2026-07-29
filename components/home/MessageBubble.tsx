@@ -62,23 +62,28 @@ function renderInline(text: string): string {
   return text
     .replace(/\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g, (_match, label: string, url: string) => {
       // Document fileUrls are already fully, correctly encoded by the data
-      // layer (lib/caseFullDetail.ts's wrapFileUrl(), which wraps every raw
-      // path through GetFilByPath?filePath=<encodeURIComponent(...)>) by the
-      // time they reach here — this renderer must NOT re-encode them.
-      //
-      // Live regression reproduced 2026-07-28 (case RP003677): an earlier
-      // version of this code did `encodeURI(decodeURI(url))` to normalize
-      // inconsistently-encoded raw fileUrls (before wrapFileUrl existed).
-      // Once fileUrls became GetFilByPath-wrapped URLs — which contain a
-      // nested encoded URL as the filePath value, e.g. "...?filePath=https
-      // %3A%2F%2F..." — that "fix" broke them: decodeURI() deliberately does
-      // NOT decode reserved characters like ":" "/" "?" "&" "=" (encodeURI's
-      // safe set), so "%3A"/"%2F" survived decodeURI unchanged, and the
-      // following encodeURI() then escaped their literal "%" into "%25",
-      // producing "%253A"/"%252F" — a double-encoded, 401-ing URL. Only "\""
-      // is escaped now, to stop the url from breaking out of the href
-      // attribute — nothing else needs fixing up at this layer anymore.
+      // layer (lib/caseFullDetail.ts's buildDownloadUrl()) by the time they
+      // reach here — this renderer must NOT re-encode them. Only "\"" is
+      // escaped, to stop the url from breaking out of an HTML attribute.
       const safeUrl = url.replace(/"/g, '%22');
+
+      // Document-download links get special handling: no `href` (so a plain
+      // click can never navigate there directly), a marker class + the url
+      // in a data attribute instead — MessageBubble's onClick handler
+      // intercepts clicks on this class and fetches it with the browser's
+      // CURRENT live session header, rather than relying on a session id
+      // baked into the link itself (see buildDownloadUrl's doc comment for
+      // why: a link opened even a day later 401'd under the old design,
+      // since the embedded session id had long expired by then).
+      let isDownloadLink = false;
+      try {
+        isDownloadLink = new URL(safeUrl).pathname === '/api/documents/download';
+      } catch {
+        isDownloadLink = false;
+      }
+      if (isDownloadLink) {
+        return `<a href="#" class="doc-download-link" data-download-url="${safeUrl}" style="color:#6763AC;text-decoration:underline;cursor:pointer;">${label}</a>`;
+      }
       return `<a href="${safeUrl}" target="_blank" rel="noopener noreferrer" style="color:#6763AC;text-decoration:underline;">${label}</a>`;
     })
     .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
@@ -229,12 +234,61 @@ export default function MessageBubble({
   onSessionExpired,
 }: MessageBubbleProps) {
   const [copied, setCopied] = useState(false);
+  const [downloadError, setDownloadError] = useState<string | null>(null);
   const isUser = message.role === 'user';
 
   const handleCopy = (text: string) => {
     navigator.clipboard.writeText(text);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
+  };
+
+  // Intercepts clicks on a .doc-download-link (see renderInline) so the
+  // request always carries the browser's CURRENT live X-Session-Id header —
+  // the link itself carries no session id, so it never goes stale (see
+  // lib/caseFullDetail.ts's buildDownloadUrl doc comment). Same
+  // fetch-with-X-Session-Id / onSessionExpired-on-401 pattern
+  // CaseResultList.tsx already uses for pagination.
+  //
+  // window.open() is called SYNCHRONOUSLY (before the await) and only
+  // navigated afterwards — opening it after the fetch would make most
+  // browsers treat it as a popup (not a direct result of the click) and
+  // block it.
+  const handleContentClick = async (e: React.MouseEvent<HTMLDivElement>) => {
+    const link = (e.target as HTMLElement).closest('.doc-download-link') as HTMLElement | null;
+    if (!link) return;
+    e.preventDefault();
+    const url = link.getAttribute('data-download-url');
+    if (!url) return;
+
+    setDownloadError(null);
+    const opened = window.open('', '_blank');
+    try {
+      const res = await fetch(url, { headers: { 'X-Session-Id': sessionId } });
+      if (res.status === 401) {
+        opened?.close();
+        onSessionExpired();
+        return;
+      }
+      if (!res.ok) {
+        opened?.close();
+        setDownloadError('This document could not be opened. Please try again.');
+        return;
+      }
+      const blob = await res.blob();
+      const objectUrl = URL.createObjectURL(blob);
+      if (opened) {
+        opened.location.href = objectUrl;
+      } else {
+        // Popup blocked before we even got a handle — fall back to a direct
+        // navigation in the current tab rather than losing the document.
+        window.location.href = objectUrl;
+      }
+      setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
+    } catch {
+      opened?.close();
+      setDownloadError('This document could not be opened. Please check your connection and try again.');
+    }
   };
 
   // User message
@@ -291,6 +345,7 @@ export default function MessageBubble({
               <div
                 key={`${message.id}-t${idx}`}
                 className="bg-background-50 border border-background-200 rounded-2xl rounded-tl-sm px-4 py-3.5 shadow-sm"
+                onClick={handleContentClick}
               >
                 <div className="space-y-1">
                   {blocks.map((block, bi) =>
@@ -434,6 +489,12 @@ export default function MessageBubble({
 
           return null;
         })}
+
+        {downloadError && (
+          <div className="bg-red-50 border border-red-200 rounded-2xl rounded-tl-sm px-4 py-3">
+            <p className="text-sm text-red-700">{downloadError}</p>
+          </div>
+        )}
 
         {/* Copy / feedback actions */}
         {allText.trim() && (
