@@ -6,21 +6,32 @@ import { mapCaseFullDetail, fetchCaseFullDetail } from '@/lib/caseFullDetail';
 // Captures the JSON body written to the outgoing http(s) request so we can
 // assert exactly what gets sent to the real backend without a network call. ──
 let capturedBody: string | undefined;
+/** Every JSON body written to an outgoing GetCaseFullDetail request, in order —
+ *  the fallback path issues more than one, so the single capturedBody above
+ *  (kept for the existing single-call tests) isn't enough on its own. */
+let capturedBodies: string[] = [];
+/** Queued {status, body} responses for tests that need something other than the
+ *  default 200; consumed one per request, then the default resumes. */
+let responseQueue: Array<{ status: number; body: unknown }> = [];
+
+const DEFAULT_RESPONSE = {
+  succeeded: true,
+  data: {
+    isAmbiguous: false,
+    data: { case: { caseNumber: 'RP-TEST' }, tasks: [], events: [], documents: [], notes: [], activities: [], accounting: {} },
+  },
+};
+
 const mockRequest = vi.fn((_options: unknown, callback: (res: EventEmitter & { statusCode: number }) => void) => {
   const req = new EventEmitter() as EventEmitter & { write: (b: string) => void; end: () => void };
-  req.write = (b: string) => { capturedBody = b; };
+  req.write = (b: string) => { capturedBody = b; capturedBodies.push(b); };
   req.end = () => {
+    const queued = responseQueue.shift();
     const res = new EventEmitter() as EventEmitter & { statusCode: number };
-    res.statusCode = 200;
+    res.statusCode = queued?.status ?? 200;
     callback(res);
     queueMicrotask(() => {
-      res.emit('data', Buffer.from(JSON.stringify({
-        succeeded: true,
-        data: {
-          isAmbiguous: false,
-          data: { case: { caseNumber: 'RP-TEST' }, tasks: [], events: [], documents: [], notes: [], activities: [], accounting: {} },
-        },
-      })));
+      res.emit('data', Buffer.from(JSON.stringify(queued ? queued.body : DEFAULT_RESPONSE)));
       res.emit('end');
     });
   };
@@ -869,5 +880,81 @@ describe('fetchCaseFullDetail — drops a guessed caseId that could corrupt a co
   it('sends caseNumber and caseName together unchanged when both are given without caseId', async () => {
     await fetchCaseFullDetail({ apiBaseUrl: 'https://uatapi.example.com', jwtToken: 'tok-4', caseNumber: 'RP2021', caseName: 'Brandon Doe vs Acme' });
     expect(JSON.parse(capturedBody!)).toEqual({ caseNumber: 'RP2021', caseName: 'Brandon Doe vs Acme' });
+  });
+});
+
+// Regression tests for a live bug found 2026-07-29 (case AE-00224): its
+// caseNumber is "AE-00224" but its fileNumber is "AE00224", and the dashboard's
+// search results display fileNumber — so users type the string that 404s.
+// GetCaseFullDetail exact-matches caseNumber only, for BOTH its caseNumber and
+// caseName parameters (verified directly against the backend: caseName=
+// "AE00224" 404s, caseName="AE-00224" succeeds). The first version of this
+// fallback only covered the caseNumber parameter, so the identical user
+// question still failed whenever the model chose to pass the string as
+// caseName instead — which it does non-deterministically, and much more often
+// once the conversation already contains case-name-shaped search results.
+describe('fetchCaseFullDetail — resolves a fileNumber-shaped identifier in whichever field the model supplied it', () => {
+  const SEARCH_HIT = {
+    data: { cases: [{ id: 224, caseNumber: 'AE-00224', fileNumber: 'AE00224' }] },
+  };
+
+  function stubSearch(payload: unknown = SEARCH_HIT) {
+    // Covers both the GetCaseListCombined lookup and the CaseDocs re-fetch;
+    // the latter tolerates any shape it doesn't recognise.
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(payload), { status: 200, headers: { 'Content-Type': 'application/json' } }),
+    ));
+  }
+
+  beforeEach(() => {
+    capturedBody = undefined;
+    capturedBodies = [];
+    responseQueue = [];
+    mockRequest.mockClear();
+    vi.unstubAllGlobals();
+  });
+
+  it('retries with the real caseNumber when a caseNumber lookup 404s', async () => {
+    responseQueue = [{ status: 404, body: { message: 'No case matched the supplied caseId/caseNumber/caseName.' } }];
+    stubSearch();
+
+    const result = await fetchCaseFullDetail({ apiBaseUrl: 'https://uatapi.example.com', jwtToken: 'fb-1', caseNumber: 'AE00224' });
+
+    expect(capturedBodies.map((b) => JSON.parse(b))).toEqual([{ caseNumber: 'AE00224' }, { caseNumber: 'AE-00224' }]);
+    expect(result.success).toBe(true);
+  });
+
+  it('retries with the real caseNumber when the SAME string arrives as caseName', async () => {
+    responseQueue = [{ status: 404, body: { message: 'No case matched the supplied caseId/caseNumber/caseName.' } }];
+    stubSearch();
+
+    const result = await fetchCaseFullDetail({ apiBaseUrl: 'https://uatapi.example.com', jwtToken: 'fb-2', caseName: 'AE00224' });
+
+    expect(capturedBodies.map((b) => JSON.parse(b))).toEqual([{ caseName: 'AE00224' }, { caseNumber: 'AE-00224' }]);
+    expect(result.success).toBe(true);
+  });
+
+  // The widened trigger must not turn a genuine case-NAME argument into a
+  // bogus retry: resolveCaseNumber only matches a string that exactly equals
+  // some case's caseNumber or fileNumber, which a real case name never does.
+  it('does not retry when the identifier matches no caseNumber/fileNumber exactly', async () => {
+    responseQueue = [{ status: 404, body: { message: 'No case matched the supplied caseId/caseNumber/caseName.' } }];
+    stubSearch({ data: { cases: [{ id: 9, caseNumber: 'ZZ-1', fileNumber: 'ZZ1' }] } });
+
+    const result = await fetchCaseFullDetail({ apiBaseUrl: 'https://uatapi.example.com', jwtToken: 'fb-3', caseName: 'Elgin Perdomo vs Allied Universal' });
+
+    expect(capturedBodies).toHaveLength(1);
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('not found');
+  });
+
+  it('does not retry a caseId-only lookup (no string to resolve)', async () => {
+    responseQueue = [{ status: 404, body: { message: 'No case matched the supplied caseId/caseNumber/caseName.' } }];
+    stubSearch();
+
+    const result = await fetchCaseFullDetail({ apiBaseUrl: 'https://uatapi.example.com', jwtToken: 'fb-4', caseId: 99999 });
+
+    expect(capturedBodies).toHaveLength(1);
+    expect(result.success).toBe(false);
   });
 });

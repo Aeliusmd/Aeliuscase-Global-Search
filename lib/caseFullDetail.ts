@@ -86,7 +86,11 @@ async function resolveCaseNumber(
     const res = await fetch(`${apiBaseUrl}/api/Case/GetCaseListCombined`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${jwtToken}`, 'Content-Type': 'application/json', Accept: 'application/json' },
-      body: JSON.stringify({ searchText: identifier.trim(), page: 1, pageSize: 5 }),
+      // Wide enough that an exact match can't be pushed off the page by its
+      // own sub-cases: case AE-00224 provably coexists with AE-00224-1
+      // through AE-00224-5 in this dataset, all of which a prefix search can
+      // return alongside it.
+      body: JSON.stringify({ searchText: identifier.trim(), page: 1, pageSize: 25 }),
       cache: 'no-store',
     });
     if (!res.ok) return null;
@@ -776,12 +780,28 @@ export async function fetchCaseFullDetail(opts: FetchCaseFullDetailOpts): Promis
     );
 
     // caseNumber-vs-fileNumber fallback (see resolveCaseNumber's doc
-    // comment) — only when a caseNumber was actually supplied and it came
-    // back not-found, and only ONE retry with whatever exact match the
-    // search resolves to.
-    if (attempt.kind === 'not-found' && caseNumber !== undefined) {
-      const resolved = await resolveCaseNumber(apiBaseUrl, jwtToken, caseNumber);
-      if (resolved && resolved !== caseNumber) {
+    // comment) — triggered by the identifier STRING the model supplied, in
+    // whichever field it chose to put it, not by the caseNumber field alone.
+    //
+    // Live bug fixed 2026-07-29: this originally only fired for caseNumber,
+    // so "how many documents with this case AE00224" still failed whenever
+    // the model happened to pass it as caseName instead — which it does
+    // non-deterministically, and much more often once the conversation
+    // already contains case-name-shaped search results (reproduced locally:
+    // the identical question routed as {caseNumber:"AE00224"} in a fresh
+    // chat but {caseName:"AE00224"} as a follow-up to a case search).
+    // caseName has exactly the same fileNumber blind spot — verified
+    // directly against the backend: caseName="AE00224" 404s while
+    // caseName="AE-00224" succeeds.
+    //
+    // Safe to widen: resolveCaseNumber only returns a match when the string
+    // EXACTLY equals some case's caseNumber or fileNumber, so a genuine
+    // case-name argument ("Elgin Perdomo vs Allied Universal") still
+    // resolves to null and leaves the not-found result untouched.
+    const searchableIdentifier = caseNumber ?? caseName;
+    if (attempt.kind === 'not-found' && searchableIdentifier !== undefined) {
+      const resolved = await resolveCaseNumber(apiBaseUrl, jwtToken, searchableIdentifier);
+      if (resolved && resolved !== searchableIdentifier) {
         attempt = await attemptFetchCaseFullDetail(apiBaseUrl, jwtToken, { caseNumber: resolved }, appOrigin);
       }
     }
