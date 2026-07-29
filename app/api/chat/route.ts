@@ -621,19 +621,64 @@ async function fetchGuideContext(userMessage: string): Promise<string> {
 }
 
 /**
- * Strip large `cases` arrays from historical tool outputs before converting to
- * model messages. The model rendered those results already — it doesn't need to
- * re-read hundreds of case objects in the context window. Keeps the summary
- * fields (totalRecords, searchText, etc.) so the model still knows what was found.
+ * Live bug fixed 2026-07-29 (AI_APICallError, confirmed via Vercel runtime
+ * logs): a long-running conversation thread on a large, data-heavy case
+ * (AE-00224: 68 documents, 989 activities, 39 parties, 16 injuries) sent
+ * 186,843 tokens to gpt-4o-mini — over its 128K limit — and the request
+ * hard-failed with a 400, which the chatbot UI shows as a stuck/empty
+ * response with no error text. This trimmer only ever zeroed `cases` (the
+ * search/filter tools' array), so every Phase-2 tool's own bulky arrays
+ * (getCaseParties' parties/partyDocs, getCaseFullDetail's nested
+ * documents/tasks/events/notes/activities) passed through completely
+ * untouched — CONTEXT_WINDOW=4 messages was never actually a token-size
+ * bound, just a message-COUNT one, and a case this size blew straight
+ * through it within that window.
+ *
+ * Trims those same fields, plus the same set nested one level under `data`
+ * (getCaseFullDetail's shape: `{success, data: {tasks, events, ...}}`). The
+ * model already answered from this data on the turn it was fetched — a
+ * follow-up question re-triggers a fresh tool call (see
+ * partiesFollowUpDirective/phase2FollowUpDirective) rather than relying on
+ * stale history, so dropping the bulk here doesn't lose anything the model
+ * still needs. Keeps summary fields (totalRecords, caseNumber, etc.) so the
+ * model still knows what was found.
  */
+const TRIMMABLE_ARRAY_KEYS = ['cases', 'parties', 'partyDocs', 'candidates', 'documents', 'tasks', 'events', 'notes', 'activities'];
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function trimArrayFields(obj: Record<string, any>): { value: Record<string, any>; changed: boolean } {
+  let changed = false;
+  const value = { ...obj };
+  for (const key of TRIMMABLE_ARRAY_KEYS) {
+    if (Array.isArray(value[key]) && value[key].length > 0) {
+      value[key] = [];
+      changed = true;
+    }
+  }
+  return { value, changed };
+}
+
 function trimToolOutputs(messages: UIMessage[]): UIMessage[] {
   return messages.map((msg) => {
     if (msg.role !== 'assistant') return msg;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const parts = (msg.parts ?? []).map((part: any) => {
       if (typeof part.type !== 'string' || !part.type.startsWith('tool-')) return part;
-      if (!part.output || !Array.isArray(part.output.cases)) return part;
-      return { ...part, output: { ...part.output, cases: [] } };
+      if (!part.output || typeof part.output !== 'object') return part;
+
+      const top = trimArrayFields(part.output);
+      let output = top.value;
+      let changed = top.changed;
+
+      if (output.data && typeof output.data === 'object' && !Array.isArray(output.data)) {
+        const nested = trimArrayFields(output.data);
+        if (nested.changed) {
+          output = { ...output, data: nested.value };
+          changed = true;
+        }
+      }
+
+      return changed ? { ...part, output } : part;
     });
     return { ...msg, parts } as UIMessage;
   });
