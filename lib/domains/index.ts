@@ -88,16 +88,41 @@ export async function resolveDomains(message: string): Promise<DomainModule[]> {
 /**
  * Merge the tool selections of every active domain: dedupe tools, OR the flags.
  * With a single active domain (today) this is just that domain's selection.
+ *
+ * Live bug fixed 2026-07-29: casesDomain's own `match` regex includes bare
+ * words like "case", "attorney", "paralegal", "coordinator" (by design — it's
+ * the fallback domain, so a message that only mentions "case" and nothing
+ * else still lands here). But that same bare-word match ALSO fires whenever
+ * a more specific domain's own topic word appears alongside the literal word
+ * "case" — e.g. "tasks due next week for CASE AE00224" matches tasksDomain
+ * (task/due + case) AND casesDomain (bare "case"); "who is the paralegal on
+ * [case]" matches caseDetailDomain (paralegal + case) AND casesDomain (bare
+ * "paralegal", since Phase-1 treats it as a staff-search signal). Both got
+ * merged together, diluting the specific domain's `requireTool`-forced
+ * EXCLUSIVE tool with casesDomain's combinedSearch/searchCases/staff tools —
+ * gpt-4o-mini non-deterministically picked the wrong one in both live tests.
+ *
+ * casesDomain's own doc comment already says it's meant to be a fallback
+ * ("anything it misses still lands here") — so when another active domain
+ * wants EXCLUSIVE control of its own single tool (requireTool), casesDomain
+ * steps aside rather than merging in search/filter tools that were never
+ * relevant to the question. A message that genuinely wants both a case
+ * search AND case detail together (no domain demanding exclusivity) is
+ * unaffected — this only excludes casesDomain, never another domain.
  */
 export function selectToolsForDomains(
   domains: DomainModule[],
   ctx: DomainContext,
 ): DomainToolSelection {
+  const selections = domains.map((d) => ({ key: d.key, sel: d.selectTools(ctx) }));
+
+  const others = selections.filter((s) => s.key !== 'cases');
+  const effective = others.length > 0 && others.some((s) => s.sel.requireTool) ? others : selections;
+
   const tools: Record<string, AiTool> = {};
   let forcedCombined = false;
   let requireTool = false;
-  for (const d of domains) {
-    const sel = d.selectTools(ctx);
+  for (const { sel } of effective) {
     Object.assign(tools, sel.tools);
     forcedCombined = forcedCombined || sel.forcedCombined;
     requireTool = requireTool || sel.requireTool;

@@ -467,3 +467,37 @@ describe('Phase 2 — accounting domain routing', () => {
     expect(domains.some((d) => d.key === 'accounting')).toBe(false);
   });
 });
+
+// Live bugs fixed 2026-07-29 (selectToolsForDomains, lib/domains/index.ts):
+// casesDomain's own bare-word regex (case/attorney/paralegal/coordinator/...)
+// ALSO matches whenever a more specific domain's own topic word appears
+// alongside the literal word "case", merging combinedSearch/searchCases/
+// getByStaff in alongside a domain that explicitly wants EXCLUSIVE control
+// (requireTool) of its own single tool — gpt-4o-mini then non-deterministically
+// picked the wrong one in two separate live tests.
+describe('casesDomain defers when another domain requires exclusive tool control', () => {
+  it('does not merge in Cases-domain tools for "tasks due next week for case AE00224" (was: combinedSearch)', () => {
+    const { domains, sel } = route('what are the tasks due next week for case AE00224');
+    expect(domains.some((d) => d.key === 'cases')).toBe(true);
+    expect(domains.some((d) => d.key === 'tasks')).toBe(true);
+    expect(sel.activeTools).toEqual(['getCaseTasks']);
+    expect(sel.activeTools).not.toContain('combinedSearch');
+    expect(sel.activeTools).not.toContain('searchCases');
+  });
+
+  it('does not merge in Cases-domain staff-search tools for "who is the paralegal on case X" (was: combinedSearch/getByStaff)', () => {
+    const { domains, sel } = route('who is the paralegal on case AE00224');
+    expect(domains.some((d) => d.key === 'cases')).toBe(true);
+    expect(domains.some((d) => d.key === 'caseDetail')).toBe(true);
+    expect(sel.activeTools).toEqual(['getCaseFullDetail']);
+    expect(sel.activeTools).not.toContain('combinedSearch');
+    expect(sel.activeTools).not.toContain('getByStaff');
+  });
+
+  it('still merges Cases-domain tools in when NO active domain requires exclusivity', () => {
+    // casesDomain's own selectTools (selectToolsForIntents) does not itself set
+    // requireTool for a plain search — confirms the merge path is otherwise unchanged.
+    const { sel } = route('show me open cases');
+    expect(sel.activeTools.length).toBeGreaterThan(0);
+  });
+});
