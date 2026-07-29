@@ -1,10 +1,11 @@
-import type { CaseParty, CasePartyDoc, CasePartyGroup, PartiesToolOutput } from '@/types/caseParties';
+import type { CaseParty, CasePartyCandidate, CasePartyDoc, CasePartyGroup, PartiesToolOutput } from '@/types/caseParties';
 
 interface FetchCasePartiesOpts {
   apiBaseUrl: string;
   jwtToken: string;
   caseId?: number;
   caseNumber?: string;
+  caseName?: string;
 }
 
 interface UpstreamResponse {
@@ -41,6 +42,87 @@ async function resolveCaseId(
   } catch {
     return null;
   }
+}
+
+type CaseNameResolution =
+  | { kind: 'found'; id: number }
+  | { kind: 'ambiguous'; candidates: CasePartyCandidate[] }
+  | { kind: 'not-found' };
+
+type CaseSearchRow = { id?: number; caseNumber?: string; caseName?: string; caseType?: string; caseStatus?: string };
+
+async function searchCasesByText(
+  apiBaseUrl: string, jwtToken: string, searchText: string, pageSize: number,
+): Promise<CaseSearchRow[]> {
+  try {
+    const res = await fetch(`${apiBaseUrl}/api/Case/GetCaseListCombined`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${jwtToken}`, 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify({ searchText: searchText.trim(), page: 1, pageSize }),
+      cache: 'no-store',
+    });
+    if (!res.ok) return [];
+    const json = (await res.json()) as { data?: { cases?: CaseSearchRow[] } };
+    return json?.data?.cases ?? [];
+  } catch {
+    return [];
+  }
+}
+
+/** Matches the "vs"/"v." separator in dashboard-style case names ("[Applicant] vs [Company]"). */
+const VS_SEPARATOR_RE = /\s+(?:vs\.?|v\.)\s+/i;
+
+/**
+ * Live bug fixed 2026-07-29: getCaseParties previously only accepted
+ * caseNumber/caseId, so a question naming the case by NAME ("what are the
+ * parties in the Tharushi samindika Perera vs MedcubeUSA LLC case?") gave the
+ * model no correct field to put it in — it jammed the full name string into
+ * caseNumber, which 404'd even though the case genuinely exists (confirmed
+ * live: same case resolves fine via caseNumber "AE00224").
+ *
+ * Adding the field surfaced a SECOND live bug: the backend's own search
+ * (GetCaseListCombined) doesn't match the full "[Applicant] vs [Company]"
+ * string at all — verified directly: searchText="Tharushi samindika Perera vs
+ * MedcubeUSA LLC" returns 0 results, while searchText="Tharushi samindika
+ * Perera" (just the applicant-name portion) returns exactly the 1 correct
+ * case. So a search with the caseName AS GIVEN is retried with just the
+ * portion before " vs "/" v. " when it comes up empty.
+ *
+ * Unlike caseNumber (unique, exact-match-or-first-row via resolveCaseId
+ * above), a case NAME is free text and can genuinely match more than one
+ * case, so this mirrors GetCaseFullDetail's own ambiguous/candidates
+ * handling (lib/caseFullDetail.ts) rather than silently picking a row.
+ */
+async function resolveCaseIdByName(
+  apiBaseUrl: string, jwtToken: string, caseName: string,
+): Promise<CaseNameResolution> {
+  let cases = await searchCasesByText(apiBaseUrl, jwtToken, caseName, 10);
+
+  if (cases.length === 0) {
+    const match = caseName.match(VS_SEPARATOR_RE);
+    const applicantPart = match?.index ? caseName.slice(0, match.index).trim() : '';
+    if (applicantPart) {
+      cases = await searchCasesByText(apiBaseUrl, jwtToken, applicantPart, 10);
+    }
+  }
+
+  if (cases.length === 0) return { kind: 'not-found' };
+
+  if (cases.length === 1) {
+    const id = cases[0]?.id;
+    return typeof id === 'number' ? { kind: 'found', id } : { kind: 'not-found' };
+  }
+
+  return {
+    kind: 'ambiguous',
+    candidates: cases.map((c) => ({
+      id: typeof c?.id === 'number' ? c.id : null,
+      caseNumber: typeof c?.caseNumber === 'string' ? c.caseNumber : null,
+      caseName: typeof c?.caseName === 'string' ? c.caseName : null,
+      caseType: typeof c?.caseType === 'string' ? c.caseType : null,
+      caseStatus: typeof c?.caseStatus === 'string' ? c.caseStatus : null,
+    })),
+  };
 }
 
 /**
@@ -117,13 +199,13 @@ function groupParties(parties: CaseParty[]): CasePartyGroup[] {
 export async function fetchCaseParties(
   opts: FetchCasePartiesOpts,
 ): Promise<PartiesToolOutput> {
-  const { apiBaseUrl, jwtToken, caseId, caseNumber } = opts;
+  const { apiBaseUrl, jwtToken, caseId, caseNumber, caseName } = opts;
 
-  if (caseId === undefined && !caseNumber) {
-    return { success: false, error: 'Provide caseId or caseNumber.' };
+  if (caseId === undefined && !caseNumber && !caseName) {
+    return { success: false, error: 'Provide caseId, caseNumber, or caseName.' };
   }
 
-  const caseRef: string = caseNumber ?? `case-${caseId}`;
+  const caseRef: string = caseNumber ?? caseName ?? `case-${caseId}`;
 
   // The by-caseNumber parties endpoint returns 404; only by-caseId works. When a
   // case NUMBER is given we resolve it to a caseId ourselves — and we PREFER the
@@ -136,6 +218,15 @@ export async function fetchCaseParties(
       return { success: false, error: `Case "${caseNumber}" not found.` };
     }
     effectiveCaseId = resolved;
+  } else if (caseName) {
+    const resolution = await resolveCaseIdByName(apiBaseUrl, jwtToken, caseName);
+    if (resolution.kind === 'not-found') {
+      return { success: false, error: `Case "${caseName}" not found.` };
+    }
+    if (resolution.kind === 'ambiguous') {
+      return { success: false, ambiguous: true, candidates: resolution.candidates };
+    }
+    effectiveCaseId = resolution.id;
   }
 
   const url = `${apiBaseUrl}/api/CaseParties/GetAllPartiesWithDocsbyCaseId/${effectiveCaseId}`;

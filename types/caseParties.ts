@@ -44,6 +44,19 @@ export interface CasePartyGroup {
   truncated: boolean;
 }
 
+/**
+ * A caseName search can match more than one case (unlike caseNumber, which is
+ * unique) — mirrors CaseFullDetailCandidate's shape (types/caseFullDetail.ts)
+ * so the model handles both tools' ambiguous results the same way.
+ */
+export interface CasePartyCandidate {
+  id: number | null;
+  caseNumber: string | null;
+  caseName: string | null;
+  caseType: string | null;
+  caseStatus: string | null;
+}
+
 export interface CasePartiesResult {
   caseRef: string;
   parties: CaseParty[];
@@ -53,6 +66,9 @@ export interface CasePartiesResult {
 
 export interface PartiesToolOutput {
   success: boolean;
+  /** true when a caseName search matched more than one case — data is absent, use candidates. */
+  ambiguous?: boolean;
+  candidates?: CasePartyCandidate[];
   caseRef?: string;
   parties?: CaseParty[];
   partyDocs?: CasePartyDoc[];
