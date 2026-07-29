@@ -8,6 +8,7 @@ import type { CaseSearchItem, PagedApiResponse, SearchToolOutput } from '@/types
 import MessageBubble, { type OnLoadMore } from './MessageBubble';
 import InputBar from './InputBar';
 import ThemeToggle from '@/components/ThemeToggle';
+import { reloadHostPage } from '@/lib/embed/reload';
 
 const SUGGESTION_CHIPS = [
   { icon: 'ri-search-eye-line', text: 'Search all cases' },
@@ -323,10 +324,17 @@ export default function ChatArea({
 
       {/* Body */}
       {sessionExpired ? (
-        <div className="flex flex-1 items-center justify-center px-6 text-center">
+        <div className="flex flex-1 flex-col items-center justify-center gap-3 px-6 text-center">
           <p className="text-sm font-medium text-foreground-700">
             Session expired — please refresh the page.
           </p>
+          <button
+            type="button"
+            onClick={reloadHostPage}
+            className="rounded-lg bg-primary-500 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-primary-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-400"
+          >
+            Refresh
+          </button>
         </div>
       ) : showEmptyState ? (
         /* Empty / welcome state */

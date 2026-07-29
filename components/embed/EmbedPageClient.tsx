@@ -8,6 +8,7 @@ import { isAllowedOrigin } from '@/lib/auth/origins';
 import type { EmbedView } from '@/lib/embed/viewState';
 import { postChatViewChanged, postReady } from '@/lib/embed/viewState';
 import { syncEmbedModeToUrl } from '@/lib/embed/syncModeUrl';
+import { reloadHostPage } from '@/lib/embed/reload';
 
 function generateId() {
   return `chat-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`;
@@ -202,10 +203,17 @@ export default function EmbedPageClient({ sessionId }: EmbedPageClientProps) {
 
   if (sessionExpired) {
     return (
-      <div className="flex h-full w-full items-center justify-center bg-background-50 px-6 text-center">
+      <div className="flex h-full w-full flex-col items-center justify-center gap-3 bg-background-50 px-6 text-center">
         <p className="text-sm font-medium text-foreground-700">
           Session expired — please refresh the page.
         </p>
+        <button
+          type="button"
+          onClick={reloadHostPage}
+          className="rounded-lg bg-primary-500 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-primary-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-400"
+        >
+          Refresh
+        </button>
       </div>
     );
   }
