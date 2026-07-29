@@ -70,4 +70,19 @@ describe('getCaseEvents tool', () => {
   it('rejects a call with no caseNumber/caseId/caseName (zod refine)', async () => {
     await expect(run({})).rejects.toBeTruthy();
   });
+
+  // Live UX fix (2026-07-29): the model classifies every call as answerScope
+  // "single_fact" (e.g. "when is the next hearing") or "full_list" (e.g.
+  // "what hearings are scheduled") — no server-side keyword list.
+  it('sets narrow:true only when answerScope is single_fact', async () => {
+    vi.mocked(fetchCaseFullDetail).mockResolvedValue({
+      success: true,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      data: { caseNumber: 'RP003583', caseName: 'x', events: [] } as any,
+    });
+
+    expect((await run({ caseNumber: 'RP003583', answerScope: 'single_fact' })).narrow).toBe(true);
+    expect((await run({ caseNumber: 'RP003583', answerScope: 'full_list' })).narrow).toBe(false);
+    expect((await run({ caseNumber: 'RP003583' })).narrow).toBe(false);
+  });
 });

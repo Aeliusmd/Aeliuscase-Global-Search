@@ -949,7 +949,7 @@ Re-send every prior filter above (with the same values) plus the new one. Only d
   const phase2FollowUpDirective = (phase2FollowUpTool && phase2FollowUpRef)
     ? `
 
-‼️ THIS TURN — The user is asking about ${phase2FollowUpTool} for the case they were just viewing: ${phase2FollowUpRef}. Call ${phase2FollowUpTool} with that case identifier (caseNumber or caseName, whichever fits "${phase2FollowUpRef}"). Do NOT search for a new case or call any other tool.`
+‼️ THIS TURN — The user is asking about ${phase2FollowUpTool} for the case they were just viewing: ${phase2FollowUpRef}. Call ${phase2FollowUpTool} with that case identifier (caseNumber or caseName, whichever fits "${phase2FollowUpRef}"). Set its answerScope to "single_fact" if this is one specific detail (e.g. "who uploaded it"), or "full_list" if it's a general request (e.g. "what documents are there"). Do NOT search for a new case or call any other tool.`
     : '';
 
   // "How many cases are in THAT venue?" — resolve the prior case's venueId and

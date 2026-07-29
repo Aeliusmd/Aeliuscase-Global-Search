@@ -247,6 +247,10 @@ export interface CaseFullDetailToolOutput {
   ambiguous?: boolean;
   candidates?: CaseFullDetailCandidate[];
   data?: CaseFullDetailData;
+  /** True when the model's own answerScope argument was "single_fact" — see
+   *  makeGetCaseFullDetailTool's doc comment (types/caseParties.ts's
+   *  PartiesToolOutput.narrow has the original fuller doc comment). */
+  narrow?: boolean;
   error?: string;
 }
 
@@ -258,6 +262,7 @@ export interface CaseTasksToolOutput {
   caseNumber?: string | null;
   caseName?: string | null;
   tasks?: CaseTaskSummary[];
+  narrow?: boolean;
   error?: string;
 }
 
@@ -269,6 +274,7 @@ export interface CaseEventsToolOutput {
   caseNumber?: string | null;
   caseName?: string | null;
   events?: CaseEventSummary[];
+  narrow?: boolean;
   error?: string;
 }
 
@@ -280,6 +286,7 @@ export interface CaseDocumentsToolOutput {
   caseNumber?: string | null;
   caseName?: string | null;
   documents?: CaseDocumentSummary[];
+  narrow?: boolean;
   error?: string;
 }
 
@@ -291,6 +298,7 @@ export interface CaseNotesToolOutput {
   caseNumber?: string | null;
   caseName?: string | null;
   notes?: CaseNoteSummary[];
+  narrow?: boolean;
   error?: string;
 }
 
@@ -302,6 +310,7 @@ export interface CaseActivitiesToolOutput {
   caseNumber?: string | null;
   caseName?: string | null;
   activities?: CaseActivitySummary[];
+  narrow?: boolean;
   error?: string;
 }
 
@@ -313,5 +322,6 @@ export interface CaseAccountingToolOutput {
   caseNumber?: string | null;
   caseName?: string | null;
   accounting?: CaseAccountingSummary;
+  narrow?: boolean;
   error?: string;
 }

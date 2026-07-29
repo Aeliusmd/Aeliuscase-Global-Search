@@ -27,22 +27,29 @@ export function makeGetCasePartiesTool(deps: PartiesDeps) {
       'If the result has ambiguous:true, the caseName matched more than one case — list the candidates and ask the user which one they mean.' +
       (narrowField
         ? ' This call is answering ONE specific field the user asked for — reply with ONLY that fact in a single short sentence. No numbered list, no restating unrelated party types, no closing filler line ("let me know if you need anything else").'
-        : ''),
+        : '') +
+      ' Set answerScope to "single_fact" for a single-detail question like "who is the insurance carrier" or "what is the venue" — answer with ONLY that fact in one short sentence: no list, no restating unrelated party types, no closing filler line. Set answerScope to "full_list" for a general/overview request like "who are the parties" or "show me the contacts" — give the fuller partyGroups-based answer as usual.',
     inputSchema: zodSchema(
       z
         .object({
           caseNumber: z.string().optional().describe('Case number string, e.g. "RP00001". Prefer this over caseId/caseName.'),
           caseId: z.number().int().optional().describe('Numeric case ID. Use only when caseNumber is not known.'),
           caseName: z.string().optional().describe('Dashboard-style case name, e.g. "Elgin Perdomo vs Allied Universal". Use this when the case is referenced by name rather than number — do NOT put a case name into caseNumber. May match more than one case.'),
+          answerScope: z.enum(['single_fact', 'full_list']).optional().describe(
+            'Whether the user asked about ONE specific detail ("single_fact") or wants a general/overview answer ("full_list") — see the tool description for how each is handled.',
+          ),
         })
         .refine((d) => d.caseNumber !== undefined || d.caseId !== undefined || d.caseName !== undefined, {
           message: 'Provide caseNumber, caseId, or caseName.',
         }),
     ),
     execute: async (input): Promise<PartiesToolOutput> => {
-      const { caseNumber, caseId, caseName } = input as { caseNumber?: string; caseId?: number; caseName?: string };
+      const { caseNumber, caseId, caseName, answerScope } = input as {
+        caseNumber?: string; caseId?: number; caseName?: string; answerScope?: 'single_fact' | 'full_list';
+      };
       const result = await fetchCaseParties({ apiBaseUrl, jwtToken, caseNumber, caseId, caseName });
-      return narrowField ? { ...result, narrow: true } : result;
+      const narrow = narrowField || answerScope === 'single_fact';
+      return narrow ? { ...result, narrow: true } : result;
     },
   });
 }

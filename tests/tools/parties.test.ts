@@ -65,3 +65,41 @@ describe('getCaseParties tool — narrowField', () => {
     expect(generalDef.description).not.toContain('ONE specific field');
   });
 });
+
+// Follow-up fix (2026-07-29): narrowField alone only covers the server-side
+// regex's known phrasings ("insurance carrier", "venue", ...) — "who is the
+// applicant on ABOVE case" fell through that regex entirely and never got
+// narrow treatment. answerScope lets the MODEL classify every call, on top
+// of (not instead of) the existing narrowField safety net.
+describe('getCaseParties tool — answerScope (model-driven, no narrowField)', () => {
+  it('sets narrow:true from answerScope alone, with no narrowField set', async () => {
+    vi.mocked(fetchCaseParties).mockResolvedValueOnce({
+      success: true, caseRef: 'AE00224', parties: [], partyDocs: [], partyGroups: [],
+    });
+
+    const out = await run(deps, { caseNumber: 'AE00224', answerScope: 'single_fact' });
+
+    expect(out.narrow).toBe(true);
+  });
+
+  it('leaves narrow unset when answerScope is full_list and narrowField is unset', async () => {
+    vi.mocked(fetchCaseParties).mockResolvedValueOnce({
+      success: true, caseRef: 'AE00224', parties: [], partyDocs: [], partyGroups: [],
+    });
+
+    const out = await run(deps, { caseNumber: 'AE00224', answerScope: 'full_list' });
+
+    expect(out.narrow).toBeUndefined();
+  });
+
+  it('OR-combines narrowField and answerScope — either one alone is enough', async () => {
+    vi.mocked(fetchCaseParties).mockResolvedValueOnce({
+      success: true, caseRef: 'AE00224', parties: [], partyDocs: [], partyGroups: [],
+    });
+
+    // narrowField true, model says full_list — the deterministic override still wins.
+    const out = await run({ apiBaseUrl: 'http://localhost', jwtToken: 'test', narrowField: true }, { caseNumber: 'AE00224', answerScope: 'full_list' });
+
+    expect(out.narrow).toBe(true);
+  });
+});
