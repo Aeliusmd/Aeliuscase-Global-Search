@@ -61,6 +61,47 @@ function httpGetWithJsonBody(
   });
 }
 
+/**
+ * A case can have a `caseNumber` and a `fileNumber` that differ ONLY by
+ * formatting (e.g. "AE-00224" vs "AE00224") — live-verified 2026-07-29. The
+ * dashboard's own case-list/search UI displays `fileNumber` in its "CASE #"
+ * column, so a real client naturally types exactly what they see there — but
+ * GetCaseFullDetail's `caseNumber` parameter only exact-matches the
+ * `caseNumber` field, not `fileNumber`, so that same string 404s ("No case
+ * matched...") even though the case genuinely exists. Confirmed live: GET
+ * with caseNumber="AE-00224" (the real caseNumber) succeeds; caseNumber=
+ * "AE00224" (the real fileNumber, same case) 404s at the backend itself.
+ *
+ * lib/caseParties.ts's resolveCaseId() already solves exactly this ambiguity
+ * for the getCaseParties path (checks caseNumber OR fileNumber via a search);
+ * this is the same fix, scoped to this module rather than sharing that
+ * function, to keep the two call paths' error handling independent.
+ */
+async function resolveCaseNumber(
+  apiBaseUrl: string,
+  jwtToken: string,
+  identifier: string,
+): Promise<string | null> {
+  try {
+    const res = await fetch(`${apiBaseUrl}/api/Case/GetCaseListCombined`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${jwtToken}`, 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify({ searchText: identifier.trim(), page: 1, pageSize: 5 }),
+      cache: 'no-store',
+    });
+    if (!res.ok) return null;
+    const json = (await res.json()) as { data?: { cases?: { caseNumber?: string; fileNumber?: string }[] } };
+    const cases = json?.data?.cases ?? [];
+    const want = identifier.trim().toLowerCase();
+    const match = cases.find(
+      (c) => c.caseNumber?.toLowerCase() === want || c.fileNumber?.toLowerCase() === want,
+    );
+    return match?.caseNumber ?? null;
+  } catch {
+    return null;
+  }
+}
+
 // ── Cache — module-scoped, short TTL, size-capped. Keyed per (jwt, identifier)
 // since case detail is per-case (unlike caseStatus.ts's one global reference
 // table). Avoids re-fetching the ~1MB response on every follow-up question
@@ -634,6 +675,80 @@ export interface FetchCaseFullDetailOpts {
   appOrigin?: string;
 }
 
+type FullDetailAttempt =
+  | { kind: 'success'; data: CaseFullDetailData }
+  | { kind: 'ambiguous'; candidates: CaseFullDetailCandidate[] }
+  | { kind: 'not-found' }
+  | { kind: 'error'; message: string };
+
+/** One GetCaseFullDetail call + the documents re-fetch/mapping that already
+ *  followed it — extracted so fetchCaseFullDetail can retry it once with a
+ *  resolved caseNumber (see resolveCaseNumber's doc comment) without
+ *  duplicating the success-path logic. */
+async function attemptFetchCaseFullDetail(
+  apiBaseUrl: string,
+  jwtToken: string,
+  args: { caseNumber?: string; caseId?: number; caseName?: string },
+  appOrigin: string | undefined,
+): Promise<FullDetailAttempt> {
+  const { status, json } = await httpGetWithJsonBody(
+    `${apiBaseUrl}/api/Case/GetCaseFullDetail`,
+    { Authorization: `Bearer ${jwtToken}`, Accept: 'application/json', 'Content-Type': 'application/json' },
+    args,
+  );
+
+  // Live bug fixed 2026-07-29: the backend answers "case not found" with an
+  // actual HTTP 404 (not a 200 with an empty/succeeded:false body), so this
+  // status check — which ran BEFORE the !inner?.data check below — was
+  // classifying every not-found case as a generic 'error', never 'not-found'.
+  // That silently disabled the caseNumber/fileNumber fallback below: it
+  // could never fire because its trigger condition never occurred.
+  if (status === 404) {
+    return { kind: 'not-found' };
+  }
+  if (status < 200 || status >= 300) {
+    return { kind: 'error', message: `API error ${status}` };
+  }
+
+  const body = json as Raw;
+  if (body?.succeeded === false) {
+    return { kind: 'error', message: body?.message ?? `API error ${status}` };
+  }
+
+  const inner = body?.data;
+  if (inner?.isAmbiguous) {
+    return { kind: 'ambiguous', candidates: (inner.candidates ?? []).map(mapCandidate) };
+  }
+  if (!inner?.data) {
+    return { kind: 'not-found' };
+  }
+
+  const mapped = mapCaseFullDetail(inner.data, appOrigin);
+
+  // GetCaseFullDetail's OWN documents array is unreliable — live-verified
+  // 2026-07-28 that case AE-00224 (internal id 224) returns documents: []
+  // from it despite genuinely having 68 documents (its tasks/events/notes
+  // came back empty too, while activities returned 989, so it looks like a
+  // partial-payload issue on a large case rather than a permission one).
+  // Other cases (e.g. AE005) DO get a correct documents array from it, so
+  // the failure is silent and case-dependent — the chatbot simply reported
+  // "no documents on file" for a case with 68 of them.
+  //
+  // POST /api/CaseDocs is the dedicated, paginated endpoint the dashboard's
+  // own Docs tab uses, and it returns all 68 correctly. Its item shape is
+  // the same one mapDocuments already handles (docId/origin/name/fileName/
+  // uploadedBy/uploadDate/fileLocation), so the rows just get re-mapped.
+  // Best-effort: any failure leaves GetCaseFullDetail's own array in place,
+  // so this can never be worse than before.
+  const internalCaseId = num(inner.data?.case?.id);
+  if (internalCaseId !== null) {
+    const items = await fetchCaseDocsList(apiBaseUrl, jwtToken, internalCaseId);
+    if (items) mapped.documents = mapDocuments({ documents: items }, appOrigin);
+  }
+
+  return { kind: 'success', data: mapped };
+}
+
 export async function fetchCaseFullDetail(opts: FetchCaseFullDetailOpts): Promise<CaseFullDetailToolOutput> {
   const { apiBaseUrl, jwtToken, caseNumber, caseId, caseName, appOrigin } = opts;
   if (caseNumber === undefined && caseId === undefined && caseName === undefined) {
@@ -656,54 +771,27 @@ export async function fetchCaseFullDetail(opts: FetchCaseFullDetailOpts): Promis
   const resolvedCaseId = caseNumber === undefined && caseName === undefined ? caseId : undefined;
 
   try {
-    const { status, json } = await httpGetWithJsonBody(
-      `${apiBaseUrl}/api/Case/GetCaseFullDetail`,
-      { Authorization: `Bearer ${jwtToken}`, Accept: 'application/json', 'Content-Type': 'application/json' },
-      { caseNumber, caseId: resolvedCaseId, caseName },
+    let attempt = await attemptFetchCaseFullDetail(
+      apiBaseUrl, jwtToken, { caseNumber, caseId: resolvedCaseId, caseName }, appOrigin,
     );
 
-    if (status < 200 || status >= 300) {
-      return { success: false, error: `API error ${status}` };
+    // caseNumber-vs-fileNumber fallback (see resolveCaseNumber's doc
+    // comment) — only when a caseNumber was actually supplied and it came
+    // back not-found, and only ONE retry with whatever exact match the
+    // search resolves to.
+    if (attempt.kind === 'not-found' && caseNumber !== undefined) {
+      const resolved = await resolveCaseNumber(apiBaseUrl, jwtToken, caseNumber);
+      if (resolved && resolved !== caseNumber) {
+        attempt = await attemptFetchCaseFullDetail(apiBaseUrl, jwtToken, { caseNumber: resolved }, appOrigin);
+      }
     }
 
-    const body = json as Raw;
-    if (body?.succeeded === false) {
-      return { success: false, error: body?.message ?? `API error ${status}` };
-    }
+    if (attempt.kind === 'error') return { success: false, error: attempt.message };
+    if (attempt.kind === 'ambiguous') return { success: false, ambiguous: true, candidates: attempt.candidates };
+    if (attempt.kind === 'not-found') return { success: false, error: `Case "${identifier}" not found.` };
 
-    const inner = body?.data;
-    if (inner?.isAmbiguous) {
-      return { success: false, ambiguous: true, candidates: (inner.candidates ?? []).map(mapCandidate) };
-    }
-    if (!inner?.data) {
-      return { success: false, error: `Case "${identifier}" not found.` };
-    }
-
-    const mapped = mapCaseFullDetail(inner.data, appOrigin);
-
-    // GetCaseFullDetail's OWN documents array is unreliable — live-verified
-    // 2026-07-28 that case AE-00224 (internal id 224) returns documents: []
-    // from it despite genuinely having 68 documents (its tasks/events/notes
-    // came back empty too, while activities returned 989, so it looks like a
-    // partial-payload issue on a large case rather than a permission one).
-    // Other cases (e.g. AE005) DO get a correct documents array from it, so
-    // the failure is silent and case-dependent — the chatbot simply reported
-    // "no documents on file" for a case with 68 of them.
-    //
-    // POST /api/CaseDocs is the dedicated, paginated endpoint the dashboard's
-    // own Docs tab uses, and it returns all 68 correctly. Its item shape is
-    // the same one mapDocuments already handles (docId/origin/name/fileName/
-    // uploadedBy/uploadDate/fileLocation), so the rows just get re-mapped.
-    // Best-effort: any failure leaves GetCaseFullDetail's own array in place,
-    // so this can never be worse than before.
-    const internalCaseId = num(inner.data?.case?.id);
-    if (internalCaseId !== null) {
-      const items = await fetchCaseDocsList(apiBaseUrl, jwtToken, internalCaseId);
-      if (items) mapped.documents = mapDocuments({ documents: items }, appOrigin);
-    }
-
-    cacheSet(key, mapped);
-    return { success: true, data: mapped };
+    cacheSet(key, attempt.data);
+    return { success: true, data: attempt.data };
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : 'Unexpected error';
     return { success: false, error: message };
