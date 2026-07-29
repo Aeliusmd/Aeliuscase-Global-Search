@@ -433,6 +433,12 @@ export default function MessageBubble({
             }
 
             if (part.state === 'output-available' && part.output) {
+              // narrow: true means this was a single-field question ("who is
+              // the insurance carrier"), not a general "list the parties"
+              // request — the full table is unnecessary UI noise on top of
+              // the one-sentence text answer the model already gives (see
+              // PartiesToolOutput.narrow's doc comment).
+              if (part.output.narrow) return null;
               return (
                 <PartyResultCard
                   key={`${message.id}-pr${idx}`}

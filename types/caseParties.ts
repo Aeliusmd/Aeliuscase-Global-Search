@@ -73,5 +73,16 @@ export interface PartiesToolOutput {
   parties?: CaseParty[];
   partyDocs?: CasePartyDoc[];
   partyGroups?: CasePartyGroup[];
+  /**
+   * True when this call was forced by a SPECIFIC single-field question ("who
+   * is the insurance carrier for AE00224") rather than a general "list the
+   * parties" request — set server-side from the question, not by the model.
+   * Live UX issue (2026-07-29): the full parties table (39 rows for case
+   * AE-00224) rendered even for a one-fact question, and the model's text
+   * answer padded a short fact out with a list + a closing filler line. When
+   * narrow is true, the client hides the full table (the text answer already
+   * carries the one fact) and the model is told to answer in one sentence.
+   */
+  narrow?: boolean;
   error?: string;
 }

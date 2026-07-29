@@ -11,6 +11,7 @@ import type { UIMessage } from 'ai';
 import OpenAI from 'openai';
 import { classifyIntents, type IntentKey } from '@/lib/tools/intentRouter';
 import { buildToolRegistry } from '@/lib/tools/registry';
+import { makeGetCasePartiesTool } from '@/lib/tools/impl/parties';
 import { resolveDomains, selectToolsForDomains, type DomainModule } from '@/lib/domains';
 import { formatTodayContext, parseDateRange } from '@/lib/dateRange';
 import { BODY_PART_IDS_TEXT } from '@/lib/bodyParts';
@@ -191,6 +192,32 @@ function explicitCasePartyFieldRef(text: string): string | null {
     /\b(?:parties|part(?:y|ies)|contacts?|venue|insurance\s+carrier|carrier|applicant|defendant|attorney|coordinator|employer|adjuster)\b.{0,40}?\b(?:on|for)\b\s+(?:case\s+)?([A-Za-z]{1,3}\d{2,})\b/i,
   );
   return m ? m[1] : null;
+}
+
+/** Any field word explicitCasePartyFieldRef/anaphoricPartyFieldQuestion match — shared so
+ *  isNarrowPartyFieldQuestion classifies the SAME word set those two already trigger on. */
+const PARTY_FIELD_WORD_RE = /\b(parties|part(?:y|ies)|contacts?|venue|insurance\s+carrier|carrier|applicant|defendant|attorney|coordinator|employer|adjuster)\b/i;
+/** "parties"/"party"/"contact(s)" mean "list everything" — every other field word
+ *  (venue, insurance carrier, applicant, defendant, attorney, coordinator, employer,
+ *  adjuster) names exactly ONE fact. */
+const GENERAL_PARTY_WORD_RE = /^(?:part(?:y|ies)|contacts?)$/i;
+
+/**
+ * Live UX issue (2026-07-29): "who is the insurance carrier for AE00224" forced
+ * getCaseParties (via explicitCasePartyFieldRef/anaphoricPartyFieldQuestion
+ * above) same as a general "show me the parties for AE00224" — both share one
+ * field-word regex that doesn't distinguish "give me everything" from "give me
+ * ONE fact". The result: a 39-row parties table rendered, and the model's text
+ * padded a one-line fact out into a numbered list plus a closing filler
+ * sentence. This classifies which kind of question it was so the forced-tool
+ * branch below can mark the call `narrow` — the client hides the big table and
+ * the model is told to answer in one sentence (see PartiesToolOutput.narrow).
+ * Returns false (not narrow) when no field word matches at all — callers only
+ * use this after already confirming a field word triggered a party lookup.
+ */
+function isNarrowPartyFieldQuestion(text: string): boolean {
+  const m = text.match(PARTY_FIELD_WORD_RE);
+  return m ? !GENERAL_PARTY_WORD_RE.test(m[1]) : false;
 }
 
 /**
@@ -897,10 +924,18 @@ Re-send every prior filter above (with the same values) plus the new one. Only d
        ?? (anaphoricPartyFieldQuestion(lastUserText) ? lastCaseRefFromHistory(messages) : null))
     : null;
 
+  // true for "who is the insurance carrier" (ONE fact), false for "show me the
+  // parties"/"list contacts" (everything) — see isNarrowPartyFieldQuestion's doc comment.
+  const partiesFollowUpNarrow = partiesFollowUpRef !== null && isNarrowPartyFieldQuestion(lastUserText);
+
   const partiesFollowUpDirective = partiesFollowUpRef
     ? `
 
-‼️ THIS TURN — The user is asking about a field (venue/attorney/applicant/insurance carrier/parties/etc.) of ONE specific case: ${partiesFollowUpRef}. Call getCaseParties with caseNumber "${partiesFollowUpRef}", then answer ONLY the specific field they asked, read from the parties result. Do NOT call a filter or search tool.`
+‼️ THIS TURN — The user is asking about a field (venue/attorney/applicant/insurance carrier/parties/etc.) of ONE specific case: ${partiesFollowUpRef}. Call getCaseParties with caseNumber "${partiesFollowUpRef}".${
+        partiesFollowUpNarrow
+          ? ' Answer with ONLY that one fact, in a single short sentence — no numbered list, no restating other party types, no closing filler line ("let me know if you need anything else").'
+          : ' Then answer the specific field they asked, read from the parties result.'
+      } Do NOT call a filter or search tool.`
     : '';
 
   // Phase-2 domain follow-up (tasks/events/documents/notes/activities/
@@ -950,14 +985,10 @@ Re-send every prior filter above (with the same values) plus the new one. Only d
       : { tools: {}, activeTools: [], forcedCombined: false, requireTool: false };
   } else if (partiesFollowUpRef) {
     // Expose ONLY getCaseParties so the model can't fall back to a filter tool.
-    const reg = buildToolRegistry({
-      apiBaseUrl, jwtToken, appOrigin, enforcedSearchType, enforcedLabel,
-      personSignal, personName, allowedFilterKeys, resolvedDateRange, resolvedRoleSlot,
-    });
-    const def = reg.get('getCaseParties')?.definition;
-    selectedTools = def
-      ? { tools: { getCaseParties: def }, activeTools: ['getCaseParties'], forcedCombined: false, requireTool: true }
-      : { tools: {}, activeTools: [], forcedCombined: false, requireTool: false };
+    // Built directly (not via buildToolRegistry) so narrowField can be set
+    // per-call from partiesFollowUpNarrow — see PartiesDeps' doc comment.
+    const def = makeGetCasePartiesTool({ apiBaseUrl, jwtToken, narrowField: partiesFollowUpNarrow });
+    selectedTools = { tools: { getCaseParties: def }, activeTools: ['getCaseParties'], forcedCombined: false, requireTool: true };
   } else if (phase2FollowUpTool && phase2FollowUpRef) {
     // Expose ONLY the one Phase-2 tool the follow-up is about, with the case
     // it's anaphoric to — see anaphoricPhase2Tool's doc comment.
