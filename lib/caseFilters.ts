@@ -5,19 +5,6 @@ import { sanitizeUpstreamError } from '@/lib/caseSearch';
 
 export const FILTER_PAGE_SIZE = 10;
 
-/** Body fields for GetCaseListByCaseDate — send both names for API compatibility. */
-export function caseDateRequestBody(
-  fromDate?: string,
-  toDate?: string,
-  subOutFilter = 'include',
-): Record<string, unknown> {
-  return {
-    ...(fromDate ? { caseFromDate: fromDate, fromDate } : {}),
-    ...(toDate ? { caseToDate: toDate, toDate } : {}),
-    subOutFilter,
-  };
-}
-
 /**
  * Mapper for the newer nested endpoints whose case rows carry richer fields
  * (caseType, caseTypeId, a ready-made displayNameForCaseSearch, attorney nick).
@@ -213,17 +200,34 @@ export async function fetchByBodyPartIds(opts: {
   });
 }
 
-// ── 4 newer filter functions (nested `data.cases` + server pagination) ───────
+// ── 4 more filter functions, migrated onto GetCaseListCombined ──────────────
+//
+// Live finding 2026-08-06 (see git history alongside the searchCases fix):
+// these 4 originally called their OWN dedicated sibling endpoints
+// (GetCaseListByCaseDate/CaseTypeId/LastNameInitial/StaffId), requested and
+// delivered BEFORE GetCaseListCombined existed (docs/Request_NEW_APIs.html,
+// June 28 — its own §4 "Open Question — Combining Multiple Filters" is what
+// GetCaseListCombined went on to answer). GetCaseListCombined already accepts
+// every one of these fields (caseFromDate/caseToDate, caseTypeId,
+// lastNameInitial, staffId+staffRole — see combinedFilter.ts's
+// buildCombinedRequestBody), so — exactly like the other 8 filters below and
+// searchCases — there's no reason left to keep 4 separate endpoints alive.
+// filterType/filterLabel/filterValue and every function's own signature are
+// UNCHANGED, so app/api/cases/filter/route.ts's Next/Previous dispatch needed
+// no changes.
 
 export async function fetchByCaseDate(opts: {
   apiBaseUrl: string; jwtToken: string;
   fromDate?: string; toDate?: string; subOutFilter?: string; page?: number;
 }): Promise<FilterToolOutput> {
   const { fromDate, toDate, subOutFilter } = opts;
-  return callFilterNested({
+  return fetchCombinedCases({
     apiBaseUrl: opts.apiBaseUrl, jwtToken: opts.jwtToken, page: opts.page ?? 1,
-    endpoint: 'GetCaseListByCaseDate',
-    body: caseDateRequestBody(fromDate, toDate, subOutFilter ?? 'include'),
+    body: {
+      ...(fromDate ? { caseFromDate: fromDate } : {}),
+      ...(toDate ? { caseToDate: toDate } : {}),
+      subOutFilter: subOutFilter ?? 'include',
+    },
     filterType: 'caseDate',
     filterLabel: `Case Date ${fromDate ?? ''}–${toDate ?? ''}`,
     filterValue: `${fromDate ?? ''}~${toDate ?? ''}`,
@@ -233,9 +237,8 @@ export async function fetchByCaseDate(opts: {
 export async function fetchByCaseTypeId(opts: {
   apiBaseUrl: string; jwtToken: string; caseTypeId: number; subOutFilter?: string; page?: number;
 }): Promise<FilterToolOutput> {
-  return callFilterNested({
+  return fetchCombinedCases({
     apiBaseUrl: opts.apiBaseUrl, jwtToken: opts.jwtToken, page: opts.page ?? 1,
-    endpoint: 'GetCaseListByCaseTypeId',
     body: { caseTypeId: opts.caseTypeId, subOutFilter: opts.subOutFilter ?? 'include' },
     filterType: 'caseTypeId',
     filterLabel: `Case Type ID ${opts.caseTypeId}`,
@@ -247,9 +250,8 @@ export async function fetchByLastNameInitial(opts: {
   apiBaseUrl: string; jwtToken: string; lastNameInitial: string; subOutFilter?: string; page?: number;
 }): Promise<FilterToolOutput> {
   const letter = opts.lastNameInitial.trim().charAt(0).toUpperCase();
-  return callFilterNested({
+  return fetchCombinedCases({
     apiBaseUrl: opts.apiBaseUrl, jwtToken: opts.jwtToken, page: opts.page ?? 1,
-    endpoint: 'GetCaseListByLastNameInitial',
     body: { lastNameInitial: letter, subOutFilter: opts.subOutFilter ?? 'include' },
     filterType: 'lastNameInitial',
     filterLabel: `Last name starts with "${letter}"`,
@@ -259,8 +261,12 @@ export async function fetchByLastNameInitial(opts: {
 
 /**
  * Cases assigned to a staff member. `jobRole` is the case-assignment SLOT
- * (attorney/coordinator/paralegal/…). IMPORTANT: never send an empty string —
- * the API returns 400 for `""`; omit the field to match any slot.
+ * (attorney/coordinator/paralegal/…) — sent to GetCaseListCombined as
+ * `staffRole` (its own field name; the dedicated GetCaseListByStaffId
+ * endpoint this used to call named it `jobRole`, see combinedFilter.ts's
+ * buildCombinedRequestBody for the same mapping the other staff path uses).
+ * IMPORTANT: never send an empty string — the API returns 400 for `""`;
+ * omit the field to match any slot.
  */
 export async function fetchByStaffId(opts: {
   apiBaseUrl: string; jwtToken: string;
@@ -268,12 +274,11 @@ export async function fetchByStaffId(opts: {
 }): Promise<FilterToolOutput> {
   const role = opts.jobRole?.trim();
   const who = opts.staffName ? `Cases for ${opts.staffName}` : `Staff #${opts.staffId}`;
-  return callFilterNested({
+  return fetchCombinedCases({
     apiBaseUrl: opts.apiBaseUrl, jwtToken: opts.jwtToken, page: opts.page ?? 1,
-    endpoint: 'GetCaseListByStaffId',
     body: {
       staffId: opts.staffId,
-      ...(role ? { jobRole: role } : {}),
+      ...(role ? { staffRole: role } : {}),
       subOutFilter: opts.subOutFilter ?? 'include',
     },
     filterType: 'staffId',
