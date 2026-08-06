@@ -129,6 +129,17 @@ export function parseDateRange(
   const local = getLocalParts(anchor, timeZone);
   const today = formatIsoDate(local.year, local.month, local.day);
 
+  // Explicit ISO date range: "between 2026-01-01 and 2026-12-31", "2026-01-01
+  // to 2026-06-30". Checked first since it's unambiguous and should win over
+  // any looser relative/named pattern below.
+  const isoRangeMatch = /\b(?:between\s+)?(\d{4}-\d{2}-\d{2})\s*(?:and|to|through|until|-|–)\s*(\d{4}-\d{2}-\d{2})\b/i.exec(t);
+  if (isoRangeMatch) {
+    const [d1, d2] = [isoRangeMatch[1], isoRangeMatch[2]];
+    const from = d1 <= d2 ? d1 : d2;
+    const to = d1 <= d2 ? d2 : d1;
+    return { from, to, label: `${from}–${to}`, kind };
+  }
+
   // Relative trailing window with an explicit count: "last 3 months", "past 30
   // days", "last 2 years", "last 6 weeks" → from (today − N units) … today.
   const relNum = t.match(/\b(?:last|past|previous)\s+(\d+)\s*(day|week|month|year)s?\b/);

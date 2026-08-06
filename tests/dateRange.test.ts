@@ -125,6 +125,33 @@ describe('parseDateRange', () => {
   it('returns null when no date phrase present', () => {
     expect(parseDateRange('most recently open case', ANCHOR, TZ)).toBeNull();
   });
+
+  it('resolves an explicit "between ISO-date and ISO-date" SOL range', () => {
+    expect(parseDateRange('cases with SOL expiring between 2026-01-01 and 2026-12-31', ANCHOR, TZ)).toEqual({
+      from: '2026-01-01',
+      to: '2026-12-31',
+      label: '2026-01-01–2026-12-31',
+      kind: 'sol',
+    });
+  });
+
+  it('resolves an explicit ISO-date range without "between"', () => {
+    expect(parseDateRange('cases opened 2026-01-01 to 2026-06-30', ANCHOR, TZ)).toEqual({
+      from: '2026-01-01',
+      to: '2026-06-30',
+      label: '2026-01-01–2026-06-30',
+      kind: 'case',
+    });
+  });
+
+  it('normalizes an out-of-order explicit ISO-date range', () => {
+    expect(parseDateRange('cases between 2026-12-31 and 2026-01-01', ANCHOR, TZ)).toEqual({
+      from: '2026-01-01',
+      to: '2026-12-31',
+      label: '2026-01-01–2026-12-31',
+      kind: 'case',
+    });
+  });
 });
 
 describe('formatTodayContext', () => {
