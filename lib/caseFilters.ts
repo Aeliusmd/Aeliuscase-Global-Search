@@ -1,6 +1,7 @@
 import type { CaseSearchItem } from '@/types/case';
 import type { FilterToolOutput, NewCaseDTO, NestedCaseListData, StaffItem } from '@/types/caseFilters';
 import { fetchCaseStatusList, listCaseTypes, resolveStatusIds, suggestStatusLabels } from '@/lib/caseStatus';
+import { sanitizeUpstreamError } from '@/lib/caseSearch';
 
 export const FILTER_PAGE_SIZE = 10;
 
@@ -85,7 +86,7 @@ async function callFilterNested(opts: CallNestedOpts): Promise<FilterToolOutput>
     });
     if (!res.ok) return fail(`API error ${res.status}`);
     const json = (await res.json()) as { succeeded?: boolean; message?: string; data?: NestedCaseListData };
-    if (!json.succeeded) return fail(json.message ?? 'Filter failed');
+    if (!json.succeeded) return fail(sanitizeUpstreamError(json.message, 'caseFilters'));
 
     const d = json.data ?? {};
     return {
@@ -376,7 +377,7 @@ async function fetchCombinedCasesSolFiltered(opts: {
       });
       if (!res.ok) throw new Error(`API error ${res.status}`);
       const json = (await res.json()) as { succeeded?: boolean; message?: string; data?: NestedCaseListData };
-      if (!json.succeeded) throw new Error(json.message ?? 'Filter failed');
+      if (!json.succeeded) throw new Error(sanitizeUpstreamError(json.message, 'caseFilters'));
       return json.data ?? {};
     };
 

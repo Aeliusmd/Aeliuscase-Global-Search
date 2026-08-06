@@ -16,6 +16,7 @@ import type {
   CaseSettlementFeeSummary,
   CaseTaskSummary,
 } from '@/types/caseFullDetail';
+import { sanitizeUpstreamError } from '@/lib/caseSearch';
 
 /**
  * GET /api/Case/GetCaseFullDetail requires the case identifier as a JSON BODY
@@ -716,7 +717,7 @@ async function attemptFetchCaseFullDetail(
 
   const body = json as Raw;
   if (body?.succeeded === false) {
-    return { kind: 'error', message: body?.message ?? `API error ${status}` };
+    return { kind: 'error', message: sanitizeUpstreamError(body?.message, 'caseFullDetail') };
   }
 
   const inner = body?.data;
