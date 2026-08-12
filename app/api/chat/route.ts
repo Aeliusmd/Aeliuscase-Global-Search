@@ -183,6 +183,28 @@ function formatCarriedFilters(values: Record<string, unknown>): string {
 const PARTY_ANSWERABLE_FIELDS =
   String.raw`parties|part(?:y|ies)|contacts?|venue|insurance\s+carrier|carrier|defendant|employer|adjuster`;
 
+/**
+ * A question asking for a CONTACT DETAIL (email / address / phone / fax) about
+ * a party, rather than asking WHO that party is.
+ *
+ * Live bug fixed 2026-08-12 — two of the Phase-02 user story's own §1 examples
+ * ("What is the insurance carrier's email address...", "What is the employer's
+ * address?"). getCaseParties is force-routed for `carrier`/`employer`, but the
+ * upstream parties response carries ONLY partyType, partyName and docs — no
+ * contact fields at all (verified live: every row on case 224 has exactly
+ * those three keys). So it could never answer, and replied "the email address
+ * is not provided" / restated the company NAME as if it were an address.
+ *
+ * getCaseFullDetail does map these (see types/caseFullDetail.ts —
+ * employer.address, insuranceCarrier.email, defendant.address, applicant
+ * phone/email), so a contact-detail question skips the parties force-route and
+ * lets caseDetailDomain take it. A plain "who is the insurance carrier"
+ * question has no contact word, so it still goes to getCaseParties exactly as
+ * before.
+ */
+const CONTACT_DETAIL_RE =
+  /\b(?:e-?mail|address|phone|telephone|mobile|fax|contact\s+(?:details?|info(?:rmation)?|number)|zip|postal\s+code)\b/i;
+
 function anaphoricPartyFieldQuestion(text: string): boolean {
   const field = new RegExp(String.raw`\b(?:${PARTY_ANSWERABLE_FIELDS})\b`, 'i');
   const anaphor = /\b(?:that|this|the|same)\s+(?:case|one|matter|file)\b|\bon\s+it\b|\bfor\s+it\b/i;
@@ -1034,10 +1056,17 @@ Re-send every prior filter above (with the same values) plus the new one. Only d
   // message ("who is the attorney on RP2134" — a role word would otherwise pull it
   // to a staff/combined search), or it's anaphoric ("what's the venue on THAT
   // case") and we take the case from the prior parties lookup.
-  const partiesFollowUpRef = (!bareName && !solNeedsYear)
+  const partyFieldRef = (!bareName && !solNeedsYear)
     ? (explicitCasePartyFieldRef(lastUserText)
        ?? (anaphoricPartyFieldQuestion(lastUserText) ? lastCaseRefFromHistory(messages) : null))
     : null;
+
+  // Same detector, two destinations: a party CONTACT DETAIL (email/address/
+  // phone) has to come from getCaseFullDetail, because the parties response
+  // carries no such fields — see CONTACT_DETAIL_RE. Everything else (a "who
+  // is the X" name lookup) still goes to getCaseParties, unchanged.
+  const contactDetailRef = (partyFieldRef && CONTACT_DETAIL_RE.test(lastUserText)) ? partyFieldRef : null;
+  const partiesFollowUpRef = contactDetailRef ? null : partyFieldRef;
 
   // true for "who is the insurance carrier" (ONE fact), false for "show me the
   // parties"/"list contacts" (everything) — see isNarrowPartyFieldQuestion's doc comment.
@@ -1084,6 +1113,12 @@ Re-send every prior filter above (with the same values) plus the new one. Only d
     : null;
   if (venueOfCaseId) allowedFilterKeys.add('venueId');
 
+  const contactDetailDirective = contactDetailRef
+    ? `
+
+‼️ THIS TURN — The user is asking for a CONTACT DETAIL (email / address / phone) of a party on case ${contactDetailRef}. Call getCaseFullDetail with that case identifier and read the answer from the matching object's own contact fields (employer.address, insuranceCarrier.email, defendant.address, applicant phone/email, etc.). If that field is null/empty, say plainly that it is not recorded on the case — do NOT substitute the party's NAME or company as if it were the address or email, and do NOT call getCaseParties (its rows carry no contact fields at all).`
+    : '';
+
   const venueOfCaseDirective = venueOfCaseId
     ? `
 
@@ -1094,6 +1129,17 @@ Re-send every prior filter above (with the same values) plus the new one. Only d
   let selectedTools: ReturnType<typeof selectToolsForDomains>;
   if (bareName || solNeedsYear) {
     selectedTools = { tools: {}, activeTools: [], forcedCombined: false, requireTool: false };
+  } else if (contactDetailRef) {
+    // Party contact detail (email/address/phone) — getCaseFullDetail only, since
+    // getCaseParties structurally cannot answer it (see CONTACT_DETAIL_RE).
+    const reg = buildToolRegistry({
+      apiBaseUrl, jwtToken, appOrigin, enforcedSearchType, enforcedLabel,
+      personSignal, personName, allowedFilterKeys, resolvedDateRange, resolvedRoleSlot,
+    });
+    const def = reg.get('getCaseFullDetail')?.definition;
+    selectedTools = def
+      ? { tools: { getCaseFullDetail: def }, activeTools: ['getCaseFullDetail'], forcedCombined: false, requireTool: true }
+      : { tools: {}, activeTools: [], forcedCombined: false, requireTool: false };
   } else if (comprehensiveCaseDetailQuestion(lastUserText)) {
     // Expose ONLY getCaseFullDetail — see comprehensiveCaseDetailQuestion's doc
     // comment for why getCaseParties must not be offered as an alternative here.
@@ -1329,7 +1375,7 @@ Rules for searchText:
 - Keep searchText SHORT — name, case number, or keyword only.
 
 searchType values:
-- 1 = All Cases  2 = Open only  3 = Closed only  4 = Sub-Out only (status "Sub-d Out" — NOT "Sub-d In")${bareNameDirective}${solYearDirective}${carriedFiltersSection}${partiesFollowUpDirective}${phase2FollowUpDirective}${venueOfCaseDirective}`;
+- 1 = All Cases  2 = Open only  3 = Closed only  4 = Sub-Out only (status "Sub-d Out" — NOT "Sub-d In")${bareNameDirective}${solYearDirective}${carriedFiltersSection}${partiesFollowUpDirective}${contactDetailDirective}${phase2FollowUpDirective}${venueOfCaseDirective}`;
 
     result = streamText({
     model: openai.chat('gpt-4o-mini'), // explicit Chat Completions API — see doc comment at top import for why

@@ -34,6 +34,14 @@ import type { DomainContext, DomainModule, DomainToolSelection } from './types';
  * mapCaseFullDetail already maps the real applicant, so this just needs the
  * word to reach this domain.
  *
+ * Note: carrier/employer CONTACT-DETAIL questions ("what is the insurance
+ * carrier's email address") also resolve to getCaseFullDetail, but they are
+ * routed by contactDetailRef in app/api/chat/route.ts rather than by this
+ * regex — deliberately, so that a plain "who is the insurance carrier for
+ * RP2476" keeps going to getCaseParties exactly as before (routing-parity
+ * test). See CONTACT_DETAIL_RE there for why the parties response cannot
+ * answer a contact-detail question at all.
+ *
  * `attorney|paralegal|coordinator` added 2026-07-19 (QA round 3, live
  * end-to-end testing): "who is the attorney for Elgin Perdomo vs Allied
  * Universal" (a case referenced by NAME, not number) got misrouted to a
