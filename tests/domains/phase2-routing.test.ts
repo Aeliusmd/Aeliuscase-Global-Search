@@ -54,6 +54,12 @@ describe('Phase 2 — caseDetail domain routing', () => {
     'who is the attorney for Elgin Perdomo vs Allied Universal',
     'who is the attorney on case RP2476',
     "what's the coordinator for the Smith vs Wallmart case",
+    // Added 2026-08-12 (Phase-02 live QA, case AE-00224): the parties response
+    // has no "Applicant" row, so this question was answered from the nearest
+    // party row ("Plaintiff") and named the wrong person. getCaseFullDetail
+    // maps the real applicant — see PARTY_ANSWERABLE_FIELDS in the chat route.
+    'who is the applicant on case AE00224',
+    'who is the applicant on the Tharushi samindika Perera vs MedcubeUSA LLC case',
   ];
 
   for (const q of onTopic) {

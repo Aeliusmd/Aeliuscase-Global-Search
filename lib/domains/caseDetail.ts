@@ -26,6 +26,14 @@ import type { DomainContext, DomainModule, DomainToolSelection } from './types';
  * though a specific case was named — mirrors the same word already used by
  * lib/tools/intentRouter.ts's filter_sol intent.
  *
+ * `applicant` added 2026-08-12 (Phase-02 live QA, case AE-00224): the parties
+ * response has no "Applicant" row at all, so "who is the applicant on case X"
+ * was being answered from the nearest-looking party row ("Plaintiff") and got
+ * the wrong person. That question is now routed here instead — see
+ * PARTY_ANSWERABLE_FIELDS in app/api/chat/route.ts for the full write-up.
+ * mapCaseFullDetail already maps the real applicant, so this just needs the
+ * word to reach this domain.
+ *
  * `attorney|paralegal|coordinator` added 2026-07-19 (QA round 3, live
  * end-to-end testing): "who is the attorney for Elgin Perdomo vs Allied
  * Universal" (a case referenced by NAME, not number) got misrouted to a
@@ -43,10 +51,10 @@ import type { DomainContext, DomainModule, DomainToolSelection } from './types';
 export const caseDetailDomain: DomainModule = {
   key: 'caseDetail',
   label: 'Case Detail',
-  llmHint: 'full detail for ONE specific case — venue, injury/body parts, statute of limitations (SOL) / expiry, date of injury (DOI), ADJ number, defendant, applicant/employer/insurance-carrier demographics, JetFile submission, or the case\'s attorney/paralegal/coordinator — especially when the case is referenced by NAME ("X vs Y") rather than case number',
+  llmHint: 'full detail for ONE specific case — venue, injury/body parts, statute of limitations (SOL) / expiry, date of injury (DOI), ADJ number, applicant, defendant, employer/insurance-carrier demographics, or the case\'s attorney/paralegal/coordinator. ALSO owns JetFile/EAMS SUBMISSION questions ("when was case X submitted to JetFile") — submitting a case to JetFile is not a document upload, so those belong here and NOT to the documents category. Especially relevant when the case is referenced by NAME ("X vs Y") rather than case number',
   match: new RegExp(
     String.raw`(?=.*\b(?:venue|injur\w*|body\s*part|sol|statute\s*of\s*limitations|expir\w*|doi|date\s*of\s*injury` +
-      String.raw`|adj\s*(?:number|#|no)?|demographics?|defendant|jet\s*file|full\s*detail|everything\s*on\s*case` +
+      String.raw`|adj\s*(?:number|#|no)?|demographics?|applicant|defendant|jet\s*file|full\s*detail|everything\s*on\s*case` +
       String.raw`|attorney|paralegal|coordinator)\b)` +
       String.raw`(?=.*(?:\bcase\b|\b[A-Z]{1,4}\d{3,}\b|\bvs\.?\b|\bv\.\s))`,
     'i',

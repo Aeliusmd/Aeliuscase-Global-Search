@@ -154,8 +154,37 @@ function formatCarriedFilters(values: Record<string, unknown>): string {
  * returns just party-attached docs (often empty), so the model reported
  * "no documents" even when getCaseDocuments would have found real ones.
  */
+/**
+ * The party TYPES that genuinely exist as rows in the parties response
+ * (GetAllPartiesWithDocsbyCaseId), so getCaseParties can actually answer a
+ * question about them — single source of truth for the three regexes below.
+ *
+ * Live bug fixed 2026-08-12 (case AE-00224, 37 party rows): `applicant`,
+ * `attorney` and `coordinator` used to be in this list, which force-routed
+ * those questions to getCaseParties EXCLUSIVELY (requireTool, see the
+ * partiesFollowUpRef branch). But the parties response has NO "Applicant" row
+ * and NO "Coordinator" row at all, and its "Attorney" row is a PARTY's
+ * attorney, not the case's assigned attorney. With no correct row to read, the
+ * model picked the nearest-looking one and answered confidently wrong:
+ *
+ *   "who is the applicant"   -> "Hiruni Kumari smokes"   (the "Plaintiff" row)
+ *   "who is the attorney"    -> "CCCAplicant company"    (the "Applicant Attorney" row)
+ *   "who is the coordinator" -> "Medcube USA"            (nearest company name)
+ *
+ * The correct values (Tharushi samindika Perera / Test Usetwo / Matrix Admin)
+ * all come from getCaseFullDetail, which maps applicant, attorney,
+ * supervisorAttorney, coordinator and paralegal explicitly (see
+ * lib/caseFullDetail.ts's mapCaseFullDetail). Dropping those three words here
+ * lets caseDetailDomain take exclusive control of them instead — casesDomain
+ * already defers to it (see selectToolsForDomains). `defendant`, `venue`,
+ * `insurance carrier` and `employer` stay: those DO exist as real party rows
+ * and were verified to answer correctly.
+ */
+const PARTY_ANSWERABLE_FIELDS =
+  String.raw`parties|part(?:y|ies)|contacts?|venue|insurance\s+carrier|carrier|defendant|employer|adjuster`;
+
 function anaphoricPartyFieldQuestion(text: string): boolean {
-  const field = /\b(part(?:y|ies)|contacts?|venue|insurance\s+carrier|carrier|applicant|defendant|attorney|coordinator|employer)\b/i;
+  const field = new RegExp(String.raw`\b(?:${PARTY_ANSWERABLE_FIELDS})\b`, 'i');
   const anaphor = /\b(?:that|this|the|same)\s+(?:case|one|matter|file)\b|\bon\s+it\b|\bfor\s+it\b/i;
   const hasCaseNumber = /\b[A-Za-z]{1,3}\d{3,}\b/;
   return field.test(text) && anaphor.test(text) && !hasCaseNumber.test(text);
@@ -189,14 +218,17 @@ function anaphoricVenueOfCaseQuestion(text: string): boolean {
  */
 function explicitCasePartyFieldRef(text: string): string | null {
   const m = text.match(
-    /\b(?:parties|part(?:y|ies)|contacts?|venue|insurance\s+carrier|carrier|applicant|defendant|attorney|coordinator|employer|adjuster)\b.{0,40}?\b(?:on|for)\b\s+(?:case\s+)?([A-Za-z]{1,3}\d{2,})\b/i,
+    new RegExp(
+      String.raw`\b(?:${PARTY_ANSWERABLE_FIELDS})\b.{0,40}?\b(?:on|for)\b\s+(?:case\s+)?([A-Za-z]{1,3}\d{2,})\b`,
+      'i',
+    ),
   );
   return m ? m[1] : null;
 }
 
 /** Any field word explicitCasePartyFieldRef/anaphoricPartyFieldQuestion match — shared so
  *  isNarrowPartyFieldQuestion classifies the SAME word set those two already trigger on. */
-const PARTY_FIELD_WORD_RE = /\b(parties|part(?:y|ies)|contacts?|venue|insurance\s+carrier|carrier|applicant|defendant|attorney|coordinator|employer|adjuster)\b/i;
+const PARTY_FIELD_WORD_RE = new RegExp(String.raw`\b(${PARTY_ANSWERABLE_FIELDS})\b`, 'i');
 /** "parties"/"party"/"contact(s)" mean "list everything" — every other field word
  *  (venue, insurance carrier, applicant, defendant, attorney, coordinator, employer,
  *  adjuster) names exactly ONE fact. */
@@ -268,6 +300,44 @@ function anaphoricPhase2Tool(text: string): string | null {
     if (re.test(text)) return tool;
   }
   return null;
+}
+
+/** Single-case DETAIL fields (the ones getCaseFullDetail maps) — the caseDetail
+ *  counterpart to PHASE2_ANAPHORIC_TOPICS above. Deliberately excludes the
+ *  general "parties"/"contacts" words: those mean "list everything" and belong
+ *  to getCaseParties, which anaphoricPartyFieldQuestion already routes. */
+const CASE_DETAIL_FIELD_RE = new RegExp(
+  String.raw`\b(?:applicant|defendant|attorney|paralegal|coordinator|insurance\s+carrier|carrier` +
+    String.raw`|employer|adjuster|venue|injur\w*|body\s*parts?|sol|statute\s+of\s+lim\w*` +
+    String.raw`|doi|date\s+of\s+injury|adj\s*(?:number|#|no)?|demographics?|jet\s*file)\b`,
+  'i',
+);
+
+/**
+ * A single-case FIELD question with NO case reference of its own AND no
+ * anaphor word either — "Who is the paralegal?" asked straight after a
+ * question about a specific case.
+ *
+ * Live bug fixed 2026-08-12 — this is verbatim an acceptance criterion in
+ * docs/qa/phase02-user-story-test-queries.md §1 ("ask right after any of the
+ * above, with no case number: Who is the paralegal?"). anaphoricPartyFieldQuestion
+ * only fires when an explicit anaphor ("that/this/the/same case", "on it") is
+ * present, so a bare field question matched nothing at all, fell through to
+ * casesDomain, and the chatbot asked "Which case would you like to see the
+ * paralegal for?" — re-asking for a case number the user had given one turn
+ * earlier. Mirrors anaphoricPhase2Tool exactly, just for getCaseFullDetail's
+ * own field set.
+ */
+function anaphoricCaseDetailQuestion(text: string): boolean {
+  // Has its own case reference — normal domain routing handles it.
+  if (/\bcase\b|\b[A-Za-z]{1,4}\d{3,}\b|\bvs\.?\b|\bv\.\s/i.test(text)) return false;
+  // Plural "cases" means a LIST search ("Raj's cases as attorney"), not a
+  // single-case field lookup — don't hijack it into a one-case detail call.
+  if (/\bcases\b/i.test(text)) return false;
+  // "How many cases are in that venue?" is a list search scoped to the prior
+  // case's venue — venueOfCaseId owns that path, so leave it alone.
+  if (anaphoricVenueOfCaseQuestion(text)) return false;
+  return CASE_DETAIL_FIELD_RE.test(text);
 }
 
 const PHASE2_TOOL_TYPES = new Set([
@@ -987,9 +1057,16 @@ Re-send every prior filter above (with the same values) plus the new one. Only d
   // accounting) with no case reference of its own — see anaphoricPhase2Tool's
   // doc comment. Only considered when nothing above already claimed this turn.
   const phase2FollowUpTool = (!bareName && !solNeedsYear && !partiesFollowUpRef)
-    ? anaphoricPhase2Tool(lastUserText)
+    ? (anaphoricPhase2Tool(lastUserText)
+       ?? (anaphoricCaseDetailQuestion(lastUserText) ? 'getCaseFullDetail' : null))
     : null;
-  const phase2FollowUpRef = phase2FollowUpTool ? lastPhase2CaseRef(messages) : null;
+  // lastPhase2CaseRef only scans Phase-2 tool calls; fall back to the parties/
+  // user-message history too, since a bare field follow-up ("who is the
+  // paralegal?") most often comes right after a getCaseParties lookup, which
+  // that function doesn't see (live bug, 2026-08-12).
+  const phase2FollowUpRef = phase2FollowUpTool
+    ? (lastPhase2CaseRef(messages) ?? lastCaseRefFromHistory(messages))
+    : null;
 
   const phase2FollowUpDirective = (phase2FollowUpTool && phase2FollowUpRef)
     ? `
@@ -1101,7 +1178,8 @@ ${guideSection}
 • If the user asks about parties, contacts, or documents (e.g. "show me the parties", "who are the parties", "list parties", "show contacts") WITHOUT providing a case number (like RP00001), a case NAME ("X vs Y"), or a numeric case ID → do NOT call any tool. Reply with exactly: "Which case would you like to see parties for? Please provide a case number (e.g. RP00001), case name, or case ID."
 • Party/contact/document requests WITH a specific case number, case name, or case ID present → call getCaseParties immediately, using whichever the user actually gave: caseNumber for a number like RP00001, caseName for a "X vs Y" name — NEVER put a case name string into the caseNumber field.
   Examples: "show parties for RP00001", "who is on case 12345", "get contacts for RP00056", "what are the parties in the Smith vs Acme case".
-  The parties result also contains the case's VENUE, INSURANCE CARRIER, APPLICANT, DEFENDANT, ATTORNEY, and COORDINATOR — so "who is the insurance carrier for RP2476", "what's the venue on RP00001", "who is the applicant on [case]", "who is the attorney on RP2476" all → call getCaseParties for that case, then read the answer from the parties list. These are NOT off-topic and are NOT a combinedSearch — never call combinedSearch for a single-case party question.
+  The parties result also contains the case's VENUE, INSURANCE CARRIER, DEFENDANT and EMPLOYER — so "who is the insurance carrier for RP2476", "what's the venue on RP00001", "who is the defendant on [case]" all → call getCaseParties for that case, then read the answer from the parties list. These are NOT off-topic and are NOT a combinedSearch — never call combinedSearch for a single-case party question.
+  ‼️ The parties result does NOT contain the case's APPLICANT, ATTORNEY, PARALEGAL or COORDINATOR. There is no "Applicant" or "Coordinator" row in it, and its "Attorney" row is a PARTY's own attorney, not the case's assigned attorney. For those four, call getCaseFullDetail instead — it maps them explicitly. NEVER answer "who is the applicant / attorney / paralegal / coordinator" from the parties list by picking the nearest-looking row (e.g. reading "Plaintiff" as the applicant, or "Applicant Attorney" as the case attorney) — that produces a confidently wrong name.
   If the result has ambiguous:true, the caseName matched more than one case — list the candidates and ask the user which one they mean; do not guess.
   REQUIRED: a case number (e.g. RP00001), case name, or numeric case ID MUST appear in the user's message. If absent → ask first, never call the tool.
 
@@ -1149,7 +1227,8 @@ getCaseFullDetail/getCaseTasks/getCaseEvents/getCaseDocuments/getCaseNotes/getCa
 • success: true with an empty array (e.g. documents: []) → the case DOES exist and genuinely has none of that record type — say so plainly ("no documents on file for this case"), do not invent one.
 
 ━━━ CASE FULL DETAIL (venue, injury/body parts, SOL, DOI, ADJ#, demographics) ━━━
-• If the user asks for venue, injury/body-part details, statute of limitations (SOL), date of injury (DOI), ADJ number, or general demographics for ONE specific case (by case number, case ID, or case name) → call getCaseFullDetail.
+• If the user asks for venue, injury/body-part details, statute of limitations (SOL), date of injury (DOI), ADJ number, JetFile/EAMS submission ("when was case X submitted to JetFile"), the case's APPLICANT / ATTORNEY / PARALEGAL / COORDINATOR, or general demographics for ONE specific case (by case number, case ID, or case name) → call getCaseFullDetail.
+  ‼️ "Submitted to JetFile" is NOT a document upload — do NOT call getCaseDocuments for it. getCaseFullDetail carries the JetFile/EAMS submission data.
 • If the result has ambiguous: true, the case NAME matched more than one case — list the candidate case numbers/names from candidates and ask the user which one they mean. Do NOT guess or pick one yourself.
 • Treat "not set" / null values in the result as genuinely missing information — say so plainly, do not invent a value.
 • This is a single-case lookup, not a list search — never call combinedSearch or searchCases for these questions.
