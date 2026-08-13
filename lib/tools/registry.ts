@@ -34,6 +34,9 @@ export interface RegistryDeps {
   jwtToken: string;
   /** This app's own origin — see FetchCaseFullDetailOpts.appOrigin's doc comment. */
   appOrigin?: string;
+  /** Current user question, forwarded to large Phase-2 section tools so they
+   * can select relevant rows before applying their prompt-size cap. */
+  queryText?: string;
   enforcedSearchType: number;
   enforcedLabel: string;
   /** Staff/applicant/none signal from the user's words — governs combinedSearch name routing. */
@@ -55,12 +58,12 @@ export interface RegistryDeps {
 
 export function buildToolRegistry(deps: RegistryDeps): Map<string, ToolEntry> {
   const {
-    apiBaseUrl, jwtToken, appOrigin, enforcedSearchType, enforcedLabel,
+    apiBaseUrl, jwtToken, appOrigin, queryText, enforcedSearchType, enforcedLabel,
     personSignal = 'none', personName = null, allowedFilterKeys, resolvedDateRange = null,
     resolvedRoleSlot = null,
   } = deps;
   const fd = { apiBaseUrl, jwtToken, resolvedDateRange };
-  const caseDetailDeps = { apiBaseUrl, jwtToken, appOrigin };
+  const caseDetailDeps = { apiBaseUrl, jwtToken, appOrigin, queryText };
 
   return new Map<string, ToolEntry>([
     ['searchCases', {

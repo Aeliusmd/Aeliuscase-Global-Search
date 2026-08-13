@@ -40,6 +40,39 @@ export interface CaseDetailDeps {
    *  buildDownloadUrl doc comment). Unused by the other 6 tools' output, but
    *  threaded through all of them for one consistent deps shape. */
   appOrigin?: string;
+  /** Current user question. Used only to narrow large document/activity
+   * sections before SECTION_SAMPLE_CAP is applied, so a requested row cannot
+   * disappear merely because it is older than the first 25 records. */
+  queryText?: string;
+}
+
+function relevantDocuments<T extends { name?: string | null; category?: string | null }>(
+  rows: T[] | undefined,
+  queryText: string | undefined,
+): T[] {
+  const all = rows ?? [];
+  if (!/\bsettlement(?:-related)?\b/i.test(queryText ?? '')) return all;
+  return all.filter((row) => /settlement/i.test(`${row.name ?? ''} ${row.category ?? ''}`));
+}
+
+function relevantActivities<T extends { description?: string | null; type?: string | null }>(
+  rows: T[] | undefined,
+  queryText: string | undefined,
+): T[] {
+  const all = rows ?? [];
+  const query = queryText ?? '';
+
+  if (/\bdemographics?\b/i.test(query) && /\bmatrix\b/i.test(query)) {
+    return all.filter((row) =>
+      /demographic/i.test(row.description ?? '') && /matrix/i.test(row.description ?? ''));
+  }
+
+  if (/\blegal\s+form\b/i.test(query) && /\bgenerat(?:e|ed|or|ing)\b/i.test(query)) {
+    return all.filter((row) =>
+      row.type === 'COMPLETED_FORMS' || /gen(?:e|a)rated\s+by/i.test(row.description ?? ''));
+  }
+
+  return all;
 }
 
 /**
@@ -177,7 +210,7 @@ export function makeGetCaseEventsTool(deps: CaseDetailDeps) {
 }
 
 export function makeGetCaseDocumentsTool(deps: CaseDetailDeps) {
-  const { apiBaseUrl, jwtToken, appOrigin } = deps;
+  const { apiBaseUrl, jwtToken, appOrigin, queryText } = deps;
   return tool({
     description:
       'Fetch the uploaded documents for ONE specific AeliusCase case — name, category, uploader, upload date, file link. Call this for questions about whether a document has been uploaded, who uploaded it, or to list documents on a specific case. If the result has ambiguous:true, the caseName matched more than one case — list the candidates and ask the user which one they mean.'
@@ -190,12 +223,13 @@ export function makeGetCaseDocumentsTool(deps: CaseDetailDeps) {
       if (!result.success) {
         return { success: false, ambiguous: result.ambiguous, candidates: result.candidates, narrow, error: result.error };
       }
+      const documents = relevantDocuments(result.data?.documents, queryText);
       return {
         success: true,
         caseNumber: result.data?.caseNumber,
         caseName: result.data?.caseName,
-        documents: cap(result.data?.documents),
-        documentsTotal: result.data?.documents?.length ?? 0,
+        documents: cap(documents),
+        documentsTotal: documents.length,
         narrow,
       };
     },
@@ -229,10 +263,10 @@ export function makeGetCaseNotesTool(deps: CaseDetailDeps) {
 }
 
 export function makeGetCaseActivitiesTool(deps: CaseDetailDeps) {
-  const { apiBaseUrl, jwtToken, appOrigin } = deps;
+  const { apiBaseUrl, jwtToken, appOrigin, queryText } = deps;
   return tool({
     description:
-      'Fetch the activity/audit history for ONE specific AeliusCase case — description, type, who performed it, timestamp, and the related note/task/event. Call this for questions like "5 most recent activities" or "when was X sent" on a specific case. Sorted most-recent-first. If the result has ambiguous:true, the caseName matched more than one case — list the candidates and ask the user which one they mean.'
+      'Fetch the activity/audit history for ONE specific AeliusCase case — description, type, who performed it, timestamp, and the related note/task/event. Call this for questions like "5 most recent activities" or "when was X sent" on a specific case. Sorted most-recent-first. For "who generated the last legal form", use the newest COMPLETED_FORMS/generated-by activity; do not confuse a nearby document "stacked by" activity with the person who generated the form. If the result has ambiguous:true, the caseName matched more than one case — list the candidates and ask the user which one they mean.'
       + answerScopeGuidance('"when was the last activity performed"', '"what are the 5 most recent activities"'),
     inputSchema: zodSchema(caseRefSchema),
     execute: async (input): Promise<CaseActivitiesToolOutput> => {
@@ -242,12 +276,13 @@ export function makeGetCaseActivitiesTool(deps: CaseDetailDeps) {
       if (!result.success) {
         return { success: false, ambiguous: result.ambiguous, candidates: result.candidates, narrow, error: result.error };
       }
+      const activities = relevantActivities(result.data?.activities, queryText);
       return {
         success: true,
         caseNumber: result.data?.caseNumber,
         caseName: result.data?.caseName,
-        activities: cap(result.data?.activities),
-        activitiesTotal: result.data?.activities?.length ?? 0,
+        activities: cap(activities),
+        activitiesTotal: activities.length,
         narrow,
       };
     },

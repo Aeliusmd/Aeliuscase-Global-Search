@@ -10,6 +10,9 @@ import { makeGetCaseDocumentsTool } from '@/lib/tools/impl/caseDetail';
 const deps = { apiBaseUrl: 'http://localhost', jwtToken: 'test' };
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const run = (input: Record<string, unknown>) => (makeGetCaseDocumentsTool(deps) as any).execute(input, {} as any);
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const runForQuestion = (queryText: string, input: Record<string, unknown>) =>
+  (makeGetCaseDocumentsTool({ ...deps, queryText }) as any).execute(input, {} as any);
 
 describe('getCaseDocuments tool', () => {
   it('slices documents + case identity off a successful fetch', async () => {
@@ -65,6 +68,36 @@ describe('getCaseDocuments tool', () => {
     const out = await run({ caseNumber: 'RP003583' });
     expect(out.success).toBe(true);
     expect(out.documents).toEqual([]);
+  });
+
+  it('filters settlement documents before applying the 25-row sample cap', async () => {
+    const unrelated = Array.from({ length: 30 }, (_, index) => ({
+      id: index + 1,
+      name: `Unrelated document ${index + 1}`,
+      category: null,
+    }));
+    vi.mocked(fetchCaseFullDetail).mockResolvedValueOnce({
+      success: true,
+      data: {
+        caseNumber: 'AE00224',
+        caseName: 'Tharushi samindika Perera vs MedcubeUSA LLC',
+        documents: [
+          ...unrelated,
+          { id: 464, name: 'Information guidelines for submission of settlement documents', category: null },
+          { id: 435, name: 'Information guidelines for submission of settlement documents', category: null },
+        ],
+      },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any);
+
+    const out = await runForQuestion(
+      'Show all settlement-related documents for case AE00224.',
+      { caseNumber: 'AE00224', answerScope: 'full_list' },
+    );
+
+    expect(out.documents).toHaveLength(2);
+    expect(out.documents.every((row: { name: string }) => /settlement/i.test(row.name))).toBe(true);
+    expect(out.documentsTotal).toBe(2);
   });
 
   it('rejects a call with no caseNumber/caseId/caseName (zod refine)', async () => {

@@ -18,6 +18,7 @@ import { formatTodayContext, parseDateRange } from '@/lib/dateRange';
 import { BODY_PART_IDS_TEXT } from '@/lib/bodyParts';
 import { resolveCaseVenueId } from '@/lib/caseParties';
 import { resolveRoleSlot, type RoleSlotResolution } from '@/lib/roleSlots';
+import { isVerificationFollowUp, lastPhase2ToolContext } from '@/lib/phase2FollowUp';
 import { getRequestAuth } from '@/lib/auth/request';
 import { collectCaseNumbers, recordAudit } from '@/lib/audit';
 
@@ -363,29 +364,10 @@ function anaphoricCaseDetailQuestion(text: string): boolean {
   return CASE_DETAIL_FIELD_RE.test(text);
 }
 
-const PHASE2_TOOL_TYPES = new Set([
-  'tool-getCaseFullDetail', 'tool-getCaseTasks', 'tool-getCaseEvents',
-  'tool-getCaseDocuments', 'tool-getCaseNotes', 'tool-getCaseActivities', 'tool-getCaseAccounting',
-]);
-
 /** The most recent case referenced by any Phase-2 tool call (getCaseFullDetail
  *  nests it under output.data; the other 6 return it at the top level). */
 function lastPhase2CaseRef(messages: UIMessage[]): string | null {
-  for (const msg of [...messages].reverse()) {
-    if (msg.role !== 'assistant') continue;
-    for (const part of (msg.parts ?? []) as {
-      type: string;
-      input?: { caseNumber?: string; caseName?: string };
-      output?: { caseNumber?: string; caseName?: string; data?: { caseNumber?: string; caseName?: string } };
-    }[]) {
-      if (!PHASE2_TOOL_TYPES.has(part.type)) continue;
-      const ref = part.output?.data?.caseNumber ?? part.output?.data?.caseName
-        ?? part.output?.caseNumber ?? part.output?.caseName
-        ?? part.input?.caseNumber ?? part.input?.caseName;
-      if (ref) return ref;
-    }
-  }
-  return null;
+  return lastPhase2ToolContext(messages)?.caseRef ?? null;
 }
 
 /** The most recent case number referenced — a prior getCaseParties lookup, or one the user typed. */
@@ -1086,8 +1068,12 @@ Re-send every prior filter above (with the same values) plus the new one. Only d
   // Phase-2 domain follow-up (tasks/events/documents/notes/activities/
   // accounting) with no case reference of its own — see anaphoricPhase2Tool's
   // doc comment. Only considered when nothing above already claimed this turn.
+  const verificationContext = isVerificationFollowUp(lastUserText)
+    ? lastPhase2ToolContext(messages)
+    : null;
   const phase2FollowUpTool = (!bareName && !solNeedsYear && !partiesFollowUpRef)
-    ? (anaphoricPhase2Tool(lastUserText)
+    ? (verificationContext?.toolName
+       ?? anaphoricPhase2Tool(lastUserText)
        ?? (anaphoricCaseDetailQuestion(lastUserText) ? 'getCaseFullDetail' : null))
     : null;
   // lastPhase2CaseRef only scans Phase-2 tool calls; fall back to the parties/
@@ -1095,13 +1081,13 @@ Re-send every prior filter above (with the same values) plus the new one. Only d
   // paralegal?") most often comes right after a getCaseParties lookup, which
   // that function doesn't see (live bug, 2026-08-12).
   const phase2FollowUpRef = phase2FollowUpTool
-    ? (lastPhase2CaseRef(messages) ?? lastCaseRefFromHistory(messages))
+    ? (verificationContext?.caseRef ?? lastPhase2CaseRef(messages) ?? lastCaseRefFromHistory(messages))
     : null;
 
   const phase2FollowUpDirective = (phase2FollowUpTool && phase2FollowUpRef)
     ? `
 
-‼️ THIS TURN — The user is asking about ${phase2FollowUpTool} for the case they were just viewing: ${phase2FollowUpRef}. Call ${phase2FollowUpTool} with that case identifier (caseNumber or caseName, whichever fits "${phase2FollowUpRef}"). Set its answerScope to "single_fact" if this is one specific detail (e.g. "who uploaded it"), or "full_list" if it's a general request (e.g. "what documents are there"). Do NOT search for a new case or call any other tool.`
+‼️ THIS TURN — The user is asking about ${phase2FollowUpTool} for the case they were just viewing: ${phase2FollowUpRef}. Call ${phase2FollowUpTool} with that case identifier (caseNumber or caseName, whichever fits "${phase2FollowUpRef}"). Set its answerScope to "single_fact" if this is one specific detail (e.g. "who uploaded it"), or "full_list" if it's a general request (e.g. "what documents are there").${verificationContext ? ' This is a verification request: re-run the tool and re-state the newly verified result. Do not reinterpret a successful result as "case not found".' : ''} Do NOT search for a new case or call any other tool.`
     : '';
 
   // "How many cases are in THAT venue?" — resolve the prior case's venueId and
@@ -1134,7 +1120,7 @@ Re-send every prior filter above (with the same values) plus the new one. Only d
     // Party contact detail (email/address/phone) — getCaseFullDetail only, since
     // getCaseParties structurally cannot answer it (see CONTACT_DETAIL_RE).
     const reg = buildToolRegistry({
-      apiBaseUrl, jwtToken, appOrigin, enforcedSearchType, enforcedLabel,
+      apiBaseUrl, jwtToken, appOrigin, queryText: lastUserText, enforcedSearchType, enforcedLabel,
       personSignal, personName, allowedFilterKeys, resolvedDateRange, resolvedRoleSlot,
     });
     const def = reg.get('getCaseFullDetail')?.definition;
@@ -1145,7 +1131,7 @@ Re-send every prior filter above (with the same values) plus the new one. Only d
     // Expose ONLY getCaseFullDetail — see comprehensiveCaseDetailQuestion's doc
     // comment for why getCaseParties must not be offered as an alternative here.
     const reg = buildToolRegistry({
-      apiBaseUrl, jwtToken, appOrigin, enforcedSearchType, enforcedLabel,
+      apiBaseUrl, jwtToken, appOrigin, queryText: lastUserText, enforcedSearchType, enforcedLabel,
       personSignal, personName, allowedFilterKeys, resolvedDateRange, resolvedRoleSlot,
     });
     const def = reg.get('getCaseFullDetail')?.definition;
@@ -1162,7 +1148,7 @@ Re-send every prior filter above (with the same values) plus the new one. Only d
     // Expose ONLY the one Phase-2 tool the follow-up is about, with the case
     // it's anaphoric to — see anaphoricPhase2Tool's doc comment.
     const reg = buildToolRegistry({
-      apiBaseUrl, jwtToken, appOrigin, enforcedSearchType, enforcedLabel,
+      apiBaseUrl, jwtToken, appOrigin, queryText: lastUserText, enforcedSearchType, enforcedLabel,
       personSignal, personName, allowedFilterKeys, resolvedDateRange, resolvedRoleSlot,
     });
     const def = reg.get(phase2FollowUpTool)?.definition;
@@ -1172,7 +1158,7 @@ Re-send every prior filter above (with the same values) plus the new one. Only d
   } else if (venueOfCaseId) {
     // "cases in that venue" — force combinedSearch with the resolved venueId.
     const reg = buildToolRegistry({
-      apiBaseUrl, jwtToken, appOrigin, enforcedSearchType, enforcedLabel,
+      apiBaseUrl, jwtToken, appOrigin, queryText: lastUserText, enforcedSearchType, enforcedLabel,
       personSignal, personName, allowedFilterKeys, resolvedDateRange, resolvedRoleSlot,
     });
     const def = reg.get('combinedSearch')?.definition;
@@ -1183,7 +1169,7 @@ Re-send every prior filter above (with the same values) plus the new one. Only d
     selectedTools = selectToolsForDomains(activeDomains, {
       message: classifyText,
       registry: buildToolRegistry({
-        apiBaseUrl, jwtToken, appOrigin, enforcedSearchType, enforcedLabel,
+        apiBaseUrl, jwtToken, appOrigin, queryText: lastUserText, enforcedSearchType, enforcedLabel,
         personSignal, personName, allowedFilterKeys, resolvedDateRange, resolvedRoleSlot,
       }),
       intents,
