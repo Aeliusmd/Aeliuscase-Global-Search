@@ -13,6 +13,7 @@ import { classifyIntents, type IntentKey } from '@/lib/tools/intentRouter';
 import { buildToolRegistry } from '@/lib/tools/registry';
 import { makeGetCasePartiesTool } from '@/lib/tools/impl/parties';
 import { resolveDomains, selectToolsForDomains, type DomainModule } from '@/lib/domains';
+import { SECTION_SAMPLE_CAP } from '@/lib/tools/impl/caseDetail';
 import { formatTodayContext, parseDateRange } from '@/lib/dateRange';
 import { BODY_PART_IDS_TEXT } from '@/lib/bodyParts';
 import { resolveCaseVenueId } from '@/lib/caseParties';
@@ -1477,7 +1478,13 @@ searchType values:
       const sectionKey = sectionOutput?.success
         ? SECTION_KEYS.find((k) => Array.isArray(sectionOutput[k]))
         : undefined;
-      const sectionCount = sectionKey ? (sectionOutput![sectionKey] as unknown[]).length : null;
+      // Prefer the tool's own `<section>Total` — the array itself is capped at
+      // SECTION_SAMPLE_CAP rows (see lib/tools/impl/caseDetail.ts), so its
+      // length is a sample size, not the real count.
+      const sectionTotal = sectionKey ? sectionOutput![`${sectionKey}Total`] : undefined;
+      const sectionCount = sectionKey
+        ? (typeof sectionTotal === 'number' ? sectionTotal : (sectionOutput![sectionKey] as unknown[]).length)
+        : null;
       const sectionCountDirective = (sectionKey && sectionCount !== null)
         ? `${systemPrompt}\n\n━━━ EXACT ${sectionKey.toUpperCase()} COUNT ━━━\nThe tool result you JUST received contains EXACTLY ${sectionCount} ${sectionKey}. If the user asked how many, state ${sectionCount} and no other number. Never estimate, round, or re-count the list yourself — ${sectionCount} is the verified total, even if you only itemize some of them in your reply.`
         : null;
@@ -1525,6 +1532,7 @@ searchType values:
       // match, instead of trusting it to tally a large nested object itself.
       const fullDetailOutput = lastToolResult?.output as {
         success?: boolean;
+        sectionTotals?: { tasks?: number; events?: number; documents?: number; notes?: number; activities?: number };
         data?: {
           tasks?: unknown[]; events?: unknown[]; documents?: unknown[];
           notes?: unknown[]; activities?: unknown[];
@@ -1537,8 +1545,13 @@ searchType values:
         const acc = d.accounting;
         const accountingCount = (acc?.chequeRequests?.length ?? 0) + (acc?.payments?.length ?? 0)
           + (acc?.clientCostsPaid?.length ?? 0) + (acc?.settlementFees?.length ?? 0);
+        // sectionTotals carries the REAL counts; data's arrays are capped
+        // samples (SECTION_SAMPLE_CAP), so never count them directly.
+        const t = fullDetailOutput.sectionTotals;
+        const n = (key: 'tasks' | 'events' | 'documents' | 'notes' | 'activities') =>
+          t?.[key] ?? (d[key]?.length ?? 0);
         return {
-          system: `${systemPrompt}\n\n━━━ CASE DETAIL — VERIFIED SECTION COUNTS ━━━\nThe real, verified counts from the tool result you JUST received, this turn, are: tasks=${d.tasks?.length ?? 0}, events=${d.events?.length ?? 0}, documents=${d.documents?.length ?? 0}, notes=${d.notes?.length ?? 0}, activities=${d.activities?.length ?? 0}, accounting records=${accountingCount}. These numbers OVERRIDE anything you or an earlier reply said about this same case earlier in this conversation — a prior turn's answer may have been wrong or about stale data, so ignore it and use ONLY the numbers above. If the user asked for a comprehensive/"everything" summary, your reply MUST mention every one of these six sections and MUST match these exact counts — state "no X on file" ONLY when its count above is 0, and when a count above is greater than 0 you MUST explicitly say records exist and state that real number (e.g. "there are ${d.documents?.length ?? 0} documents on file"). Never say "no documents"/"no activities"/etc. for a section whose count above is non-zero, even if you cannot see every individual row, and even if you said otherwise a moment ago.`,
+          system: `${systemPrompt}\n\n━━━ CASE DETAIL — VERIFIED SECTION COUNTS ━━━\nThe real, verified counts from the tool result you JUST received, this turn, are: tasks=${n('tasks')}, events=${n('events')}, documents=${n('documents')}, notes=${n('notes')}, activities=${n('activities')}, accounting records=${accountingCount}. Note the arrays in the tool result are only the first ${SECTION_SAMPLE_CAP} rows of each section — these counts are the true totals, so never re-count the rows yourself. These numbers OVERRIDE anything you or an earlier reply said about this same case earlier in this conversation — a prior turn's answer may have been wrong or about stale data, so ignore it and use ONLY the numbers above. If the user asked for a comprehensive/"everything" summary, your reply MUST mention every one of these six sections and MUST match these exact counts — state "no X on file" ONLY when its count above is 0, and when a count above is greater than 0 you MUST explicitly say records exist and state that real number (e.g. "there are ${d.documents?.length ?? 0} documents on file"). Never say "no documents"/"no activities"/etc. for a section whose count above is non-zero, even if you cannot see every individual row, and even if you said otherwise a moment ago.`,
         };
       }
 

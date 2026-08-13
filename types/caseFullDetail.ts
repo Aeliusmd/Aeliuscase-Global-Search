@@ -241,12 +241,27 @@ export interface CaseFullDetailCandidate {
   caseStatus: string | null;
 }
 
+/**
+ * TRUE row counts per section, kept alongside the (capped) arrays in a tool
+ * output — see SECTION_SAMPLE_CAP in lib/tools/impl/caseDetail.ts. Always the
+ * full count from the backend, never the length of the sampled array.
+ */
+export interface CaseSectionTotals {
+  tasks: number;
+  events: number;
+  documents: number;
+  notes: number;
+  activities: number;
+}
+
 export interface CaseFullDetailToolOutput {
   success: boolean;
   /** true when a caseName search matched more than one case — data is absent, use candidates. */
   ambiguous?: boolean;
   candidates?: CaseFullDetailCandidate[];
   data?: CaseFullDetailData;
+  /** Real per-section totals; data's arrays are capped samples. See CaseSectionTotals. */
+  sectionTotals?: CaseSectionTotals;
   /** True when the model's own answerScope argument was "single_fact" — see
    *  makeGetCaseFullDetailTool's doc comment (types/caseParties.ts's
    *  PartiesToolOutput.narrow has the original fuller doc comment). */
@@ -262,6 +277,8 @@ export interface CaseTasksToolOutput {
   caseNumber?: string | null;
   caseName?: string | null;
   tasks?: CaseTaskSummary[];
+  /** TRUE total row count — `tasks` above is capped, see SECTION_SAMPLE_CAP. */
+  tasksTotal?: number;
   narrow?: boolean;
   error?: string;
 }
@@ -274,6 +291,8 @@ export interface CaseEventsToolOutput {
   caseNumber?: string | null;
   caseName?: string | null;
   events?: CaseEventSummary[];
+  /** TRUE total row count — `events` above is capped, see SECTION_SAMPLE_CAP. */
+  eventsTotal?: number;
   narrow?: boolean;
   error?: string;
 }
@@ -286,6 +305,8 @@ export interface CaseDocumentsToolOutput {
   caseNumber?: string | null;
   caseName?: string | null;
   documents?: CaseDocumentSummary[];
+  /** TRUE total row count — `documents` above is capped, see SECTION_SAMPLE_CAP. */
+  documentsTotal?: number;
   narrow?: boolean;
   error?: string;
 }
@@ -298,6 +319,8 @@ export interface CaseNotesToolOutput {
   caseNumber?: string | null;
   caseName?: string | null;
   notes?: CaseNoteSummary[];
+  /** TRUE total row count — `notes` above is capped, see SECTION_SAMPLE_CAP. */
+  notesTotal?: number;
   narrow?: boolean;
   error?: string;
 }
@@ -310,6 +333,8 @@ export interface CaseActivitiesToolOutput {
   caseNumber?: string | null;
   caseName?: string | null;
   activities?: CaseActivitySummary[];
+  /** TRUE total row count — `activities` above is capped, see SECTION_SAMPLE_CAP. */
+  activitiesTotal?: number;
   narrow?: boolean;
   error?: string;
 }

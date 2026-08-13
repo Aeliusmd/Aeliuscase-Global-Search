@@ -1,7 +1,36 @@
 import { tool, zodSchema } from 'ai';
 import { z } from 'zod';
-import type { CaseAccountingToolOutput, CaseActivitiesToolOutput, CaseDocumentsToolOutput, CaseEventsToolOutput, CaseFullDetailToolOutput, CaseNotesToolOutput, CaseTasksToolOutput } from '@/types/caseFullDetail';
+import type { CaseAccountingToolOutput, CaseActivitiesToolOutput, CaseDocumentsToolOutput, CaseEventsToolOutput, CaseFullDetailToolOutput, CaseNotesToolOutput, CaseSectionTotals, CaseTasksToolOutput } from '@/types/caseFullDetail';
 import { fetchCaseFullDetail } from '@/lib/caseFullDetail';
+
+/**
+ * Max rows of any one section handed to the model. The FULL count always
+ * travels alongside as a separate number, so an answer that only needs the
+ * total ("how many tasks?") stays exact while the prompt stays small.
+ *
+ * Live regression fixed 2026-08-13: once the backend fixed its partial-payload
+ * bug (docs/Request_GetCaseFullDetail_PartialPayload.html) case AE-00224
+ * started returning every section populated at once — 230 tasks, 187 events,
+ * 82 documents, 38 notes and 1156 activities. Measured against the real mapped
+ * output that is ~431,000 characters (~108,000 tokens) from getCaseFullDetail
+ * ALONE, and "show me everything on case AE00224" hard-failed with
+ * AI_APICallError: "maximum context length is 128000 tokens, however your
+ * messages resulted in 141472 tokens" — which the UI shows as a completely
+ * blank reply. Activities were ~76,000 of those tokens by themselves.
+ *
+ * trimToolOutputs() in app/api/chat/route.ts already zeroes these arrays, but
+ * only for HISTORICAL messages; the current turn's own tool result is what
+ * overflowed here, so the cap has to happen at the source.
+ *
+ * 25 is well above what any answer actually itemizes (the system prompt asks
+ * for a one-line-per-section summary on comprehensive requests) and brings the
+ * same case to roughly 8,000 tokens.
+ */
+export const SECTION_SAMPLE_CAP = 25;
+
+function cap<T>(rows: T[] | undefined): T[] {
+  return (rows ?? []).slice(0, SECTION_SAMPLE_CAP);
+}
 
 export interface CaseDetailDeps {
   apiBaseUrl: string;
@@ -66,7 +95,31 @@ export function makeGetCaseFullDetailTool(deps: CaseDetailDeps) {
     execute: async (input): Promise<CaseFullDetailToolOutput> => {
       const { caseNumber, caseId, caseName, answerScope } = input as CaseRefInput;
       const result = await fetchCaseFullDetail({ apiBaseUrl, jwtToken, caseNumber, caseId, caseName, appOrigin });
-      return { ...result, narrow: answerScope === 'single_fact' };
+      const narrow = answerScope === 'single_fact';
+      if (!result.success || !result.data) return { ...result, narrow };
+
+      // Cap every section, but keep the real totals — see SECTION_SAMPLE_CAP.
+      const d = result.data;
+      const sectionTotals: CaseSectionTotals = {
+        tasks: d.tasks?.length ?? 0,
+        events: d.events?.length ?? 0,
+        documents: d.documents?.length ?? 0,
+        notes: d.notes?.length ?? 0,
+        activities: d.activities?.length ?? 0,
+      };
+      return {
+        ...result,
+        narrow,
+        sectionTotals,
+        data: {
+          ...d,
+          tasks: cap(d.tasks),
+          events: cap(d.events),
+          documents: cap(d.documents),
+          notes: cap(d.notes),
+          activities: cap(d.activities),
+        },
+      };
     },
   });
 }
@@ -89,7 +142,8 @@ export function makeGetCaseTasksTool(deps: CaseDetailDeps) {
         success: true,
         caseNumber: result.data?.caseNumber,
         caseName: result.data?.caseName,
-        tasks: result.data?.tasks ?? [],
+        tasks: cap(result.data?.tasks),
+        tasksTotal: result.data?.tasks?.length ?? 0,
         narrow,
       };
     },
@@ -114,7 +168,8 @@ export function makeGetCaseEventsTool(deps: CaseDetailDeps) {
         success: true,
         caseNumber: result.data?.caseNumber,
         caseName: result.data?.caseName,
-        events: result.data?.events ?? [],
+        events: cap(result.data?.events),
+        eventsTotal: result.data?.events?.length ?? 0,
         narrow,
       };
     },
@@ -139,7 +194,8 @@ export function makeGetCaseDocumentsTool(deps: CaseDetailDeps) {
         success: true,
         caseNumber: result.data?.caseNumber,
         caseName: result.data?.caseName,
-        documents: result.data?.documents ?? [],
+        documents: cap(result.data?.documents),
+        documentsTotal: result.data?.documents?.length ?? 0,
         narrow,
       };
     },
@@ -164,7 +220,8 @@ export function makeGetCaseNotesTool(deps: CaseDetailDeps) {
         success: true,
         caseNumber: result.data?.caseNumber,
         caseName: result.data?.caseName,
-        notes: result.data?.notes ?? [],
+        notes: cap(result.data?.notes),
+        notesTotal: result.data?.notes?.length ?? 0,
         narrow,
       };
     },
@@ -189,7 +246,8 @@ export function makeGetCaseActivitiesTool(deps: CaseDetailDeps) {
         success: true,
         caseNumber: result.data?.caseNumber,
         caseName: result.data?.caseName,
-        activities: result.data?.activities ?? [],
+        activities: cap(result.data?.activities),
+        activitiesTotal: result.data?.activities?.length ?? 0,
         narrow,
       };
     },
