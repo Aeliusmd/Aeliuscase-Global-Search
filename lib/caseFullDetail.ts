@@ -583,6 +583,19 @@ function mapAccounting(topLevel: Raw): CaseAccountingSummary {
   };
 }
 
+/** The case-level jetFileId is not authoritative for submission history: live
+ * AE-00224 has successful rows here while case.jetFileId is null. Use the
+ * earliest successful submission timestamp, not a document upload date. */
+function mapJetFileSubmissionDate(topLevel: Raw): string | null {
+  const submissions: Raw[] = topLevel?.eamsSubmissions ?? [];
+  const successfulDates = submissions
+    .filter((row) => str(row?.jetfileId) !== null || num(row?.appStatus) === 3)
+    .map((row) => str(row?.createdDateTime) ?? str(row?.appFilingDate))
+    .filter((value): value is string => value !== null)
+    .sort((a, b) => Date.parse(a) - Date.parse(b));
+  return successfulDates[0] ?? null;
+}
+
 export function mapCaseFullDetail(topLevel: Raw, appOrigin?: string): CaseFullDetailData {
   const c: Raw = topLevel?.case ?? {};
   return {
@@ -595,6 +608,7 @@ export function mapCaseFullDetail(topLevel: Raw, appOrigin?: string): CaseFullDe
     venue: mapVenue(c, topLevel),
     adjNumber: str(c.adjNumber),
     jetFileId: num(c.jetFileId),
+    jetFileSubmissionDate: mapJetFileSubmissionDate(topLevel),
 
     attorney: person(c.caseAttorneyName, c.caseAttorneyNikeName),
     supervisorAttorney: person(c.caseSupervisorAttorneyName, c.caseSupervisorAttorneyNikeName),

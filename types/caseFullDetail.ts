@@ -189,6 +189,9 @@ export interface CaseFullDetailData {
   venue: string | null;
   adjNumber: string | null;
   jetFileId: number | null;
+  /** Earliest successful EAMS/JetFile submission timestamp. This is separate
+   * from the case-level jetFileId, which can remain null after submissions. */
+  jetFileSubmissionDate: string | null;
 
   attorney: CasePersonSummary | null;
   supervisorAttorney: CasePersonSummary | null;
@@ -262,6 +265,9 @@ export interface CaseFullDetailToolOutput {
   data?: CaseFullDetailData;
   /** Real per-section totals; data's arrays are capped samples. See CaseSectionTotals. */
   sectionTotals?: CaseSectionTotals;
+  /** Exact ADJ matches for body-part names explicitly requested this turn.
+   * Empty arrays mean that body part is not present in the returned injuries. */
+  requestedInjuryAdjNumbers?: Record<string, string[]>;
   /** True when the model's own answerScope argument was "single_fact" — see
    *  makeGetCaseFullDetailTool's doc comment (types/caseParties.ts's
    *  PartiesToolOutput.narrow has the original fuller doc comment). */
@@ -347,6 +353,10 @@ export interface CaseAccountingToolOutput {
   caseNumber?: string | null;
   caseName?: string | null;
   accounting?: CaseAccountingSummary;
+  /** A case-wide balance is only populated when the backend provides one.
+   * Never derive it from one settlement invoice's remainingBalance. */
+  currentBalance?: number | null;
+  currentBalanceAvailable?: boolean;
   narrow?: boolean;
   error?: string;
 }

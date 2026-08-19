@@ -21,6 +21,13 @@ import { resolveRoleSlot, type RoleSlotResolution } from '@/lib/roleSlots';
 import { isVerificationFollowUp, lastPhase2ToolContext } from '@/lib/phase2FollowUp';
 import { getRequestAuth } from '@/lib/auth/request';
 import { collectCaseNumbers, recordAudit } from '@/lib/audit';
+import {
+  additiveCaseKeyword,
+  defaultCaseSearchText,
+  isImplicitSearchRefinement,
+  isMixedCaseSearchAndPartyRequest,
+  whoIsOnCaseRef,
+} from '@/lib/searchContext';
 
 // 300s = the maximum a Vercel Function may run on a Pro-plan project (standard
 // Vercel Functions, no Fluid Compute). Was 30s — live-reproduced 2026-07-27
@@ -44,7 +51,7 @@ const SEARCH_TYPE_LABELS: Record<number, string> = {
 
 type ToolPart = {
   type: string;
-  output?: { searchType?: number; searchText?: string; totalRecords?: number };
+  output?: { searchType?: number; searchText?: string; totalRecords?: number; filterValue?: string };
 };
 
 /**
@@ -241,6 +248,8 @@ function anaphoricVenueOfCaseQuestion(text: string): boolean {
  * it fully excluded getCaseDocuments rather than merely offering both.
  */
 function explicitCasePartyFieldRef(text: string): string | null {
+  const generalPartyRef = whoIsOnCaseRef(text);
+  if (generalPartyRef) return generalPartyRef;
   const m = text.match(
     new RegExp(
       String.raw`\b(?:${PARTY_ANSWERABLE_FIELDS})\b.{0,40}?\b(?:on|for)\b\s+(?:case\s+)?([A-Za-z]{1,3}\d{2,})\b`,
@@ -585,6 +594,14 @@ function detectSearchType(messages: UIMessage[]): number {
   for (const msg of [...messages].reverse()) {
     if (msg.role !== 'assistant') continue;
     for (const part of (msg.parts ?? []) as ToolPart[]) {
+      if (part.type === 'tool-combinedSearch' && part.output?.filterValue) {
+        try {
+          const status = Number((JSON.parse(part.output.filterValue) as { status?: unknown }).status);
+          if (status >= 1 && status <= 4) return status;
+        } catch {
+          // Ignore malformed historical tool output and continue scanning.
+        }
+      }
       if (part.type === 'tool-searchCases' && part.output?.searchType) {
         const t = part.output.searchType;
         if (t >= 1 && t <= 4) return t;
@@ -610,7 +627,7 @@ function carryForwardFilterContext(messages: UIMessage[]): { values: Record<stri
   const empty = { values: {} as Record<string, unknown>, keys: new Set<string>() };
   for (const msg of [...messages].reverse()) {
     if (msg.role !== 'assistant') continue;
-    for (const part of (msg.parts ?? []) as { type: string; output?: { filterType?: string; filterValue?: string } }[]) {
+    for (const part of (msg.parts ?? []) as { type: string; output?: { filterType?: string; filterValue?: string; searchText?: string } }[]) {
       if (typeof part.type !== 'string' || !part.type.startsWith('tool-') || !part.output) continue;
       const out = part.output;
 
@@ -637,7 +654,13 @@ function carryForwardFilterContext(messages: UIMessage[]): { values: Record<stri
 
       // Free-text search / parties — no structured filter to carry. Stop at the
       // most recent search so we don't resurrect a filter from further back.
-      if (part.type === 'tool-searchCases' || part.type === 'tool-getCaseParties') return empty;
+      if (part.type === 'tool-searchCases') {
+        const searchText = out.searchText?.trim();
+        return searchText
+          ? { values: { applicantName: searchText }, keys: new Set(['applicantName']) }
+          : empty;
+      }
+      if (part.type === 'tool-getCaseParties') return empty;
     }
   }
   return empty;
@@ -862,6 +885,14 @@ export async function POST(req: Request) {
   // them into a last-name initial).
   let personName = personSignal !== 'none' ? extractPersonName(classifyText) : null;
 
+  // Phase-1 contract: "cases for John Smith" is a normal case keyword search,
+  // defaulting to applicant/client semantics. Explicit staff wording still wins.
+  const defaultSearchText = personSignal === 'none' ? defaultCaseSearchText(lastUserText) : null;
+  if (defaultSearchText) {
+    personSignal = 'applicant';
+    personName = defaultSearchText;
+  }
+
   // Deterministic ROLE-SLOT detection, mirroring personName above: the model's
   // own `jobRole` tool argument was previously trusted unconditionally (in
   // combined.ts / staff.ts), which let it invent a role (e.g. "Other Attorney")
@@ -876,7 +907,8 @@ export async function POST(req: Request) {
   // Computed here (rather than after) so its result can gate the LLM refinement
   // classifier below and run inside the SAME Promise.all — no added latency.
   const priorFilters = carryForwardFilterContext(messages);
-  const regexRefining = priorFilters.keys.size > 0 && isRefinement(lastUserText);
+  const regexRefining = priorFilters.keys.size > 0
+    && (isRefinement(lastUserText) || isImplicitSearchRefinement(lastUserText));
   // Only ask the LLM when the fast regex didn't already decide AND there's a
   // prior filter worth refining — a fresh first message never pays this cost.
   const needsLLMRefinementCheck = priorFilters.keys.size > 0 && !regexRefining;
@@ -954,6 +986,11 @@ ${guideContext}
       personSignal = 'applicant';
       personName = priorFilters.values.applicantName;
     }
+  }
+  const newCaseKeyword = refining ? additiveCaseKeyword(lastUserText) : null;
+  if (newCaseKeyword && typeof priorFilters.values.applicantName === 'string') {
+    personSignal = 'applicant';
+    personName = `${priorFilters.values.applicantName} ${newCaseKeyword}`.trim();
   }
   // Carry the resolved ROLE SLOT forward too on a refinement turn (e.g. "Raj's
   // cases as paralegal" → "only the open ones" must stay scoped to paralegal,
@@ -1049,7 +1086,17 @@ Re-send every prior filter above (with the same values) plus the new one. Only d
   // carries no such fields — see CONTACT_DETAIL_RE. Everything else (a "who
   // is the X" name lookup) still goes to getCaseParties, unchanged.
   const contactDetailRef = (partyFieldRef && CONTACT_DETAIL_RE.test(lastUserText)) ? partyFieldRef : null;
-  const partiesFollowUpRef = contactDetailRef ? null : partyFieldRef;
+  const mixedCaseAndPartyRequest = isMixedCaseSearchAndPartyRequest(lastUserText);
+  const mixedCaseRef = mixedCaseAndPartyRequest
+    ? lastUserText.match(/\b(?:case\s+)?([A-Za-z]{1,4}\d{2,})\b/i)?.[1] ?? null
+    : null;
+  const partiesFollowUpRef = (contactDetailRef || mixedCaseAndPartyRequest) ? null : partyFieldRef;
+
+  const mixedRequestDirective = mixedCaseAndPartyRequest
+    ? `
+
+‼️ THIS TURN — MIXED REQUEST: Complete BOTH operations in order. First call combinedSearch for the open/closed case search using applicantName "${defaultSearchText ?? ''}" and the requested status. Then call getCaseParties with caseNumber "${mixedCaseRef ?? ''}". Do not substitute getCaseFullDetail and do not repeat either tool.`
+    : '';
 
   // true for "who is the insurance carrier" (ONE fact), false for "show me the
   // parties"/"list contacts" (everything) — see isNarrowPartyFieldQuestion's doc comment.
@@ -1116,6 +1163,23 @@ Re-send every prior filter above (with the same values) plus the new one. Only d
   let selectedTools: ReturnType<typeof selectToolsForDomains>;
   if (bareName || solNeedsYear) {
     selectedTools = { tools: {}, activeTools: [], forcedCombined: false, requireTool: false };
+  } else if (mixedCaseAndPartyRequest) {
+    const reg = buildToolRegistry({
+      apiBaseUrl, jwtToken, appOrigin, queryText: lastUserText, enforcedSearchType, enforcedLabel,
+      personSignal, personName, allowedFilterKeys, resolvedDateRange, resolvedRoleSlot,
+    });
+    const combinedDef = reg.get('combinedSearch')?.definition;
+    const partiesDef = reg.get('getCaseParties')?.definition;
+    const tools = {
+      ...(combinedDef ? { combinedSearch: combinedDef } : {}),
+      ...(partiesDef ? { getCaseParties: partiesDef } : {}),
+    };
+    selectedTools = {
+      tools,
+      activeTools: Object.keys(tools),
+      forcedCombined: Boolean(combinedDef),
+      requireTool: true,
+    };
   } else if (contactDetailRef) {
     // Party contact detail (email/address/phone) — getCaseFullDetail only, since
     // getCaseParties structurally cannot answer it (see CONTACT_DETAIL_RE).
@@ -1189,11 +1253,12 @@ You help with two things only:
 ${guideSection}
 
 ━━━ HOW TO RESPOND ━━━
-• Case search (find/show/look up cases — NOT when the user is asking about parties, contacts, or documents for a case) → call searchCases immediately. Never skip this. (EXCEPTION: the ambiguous bare-name rule below.)
+• Case search (find/show/look up cases — NOT when the user is asking about parties, contacts, or documents for a case) → call searchCases immediately. Never skip this.
+• PHASE-1 NAME DEFAULT — wording like "find cases for John Smith", "open cases for Maria", or "closed cases for Smith" means the applicant/client search keyword is that name. Search immediately; do NOT ask whether the person is staff. Explicit staff wording still uses the staff tools.
 • CLIENT / APPLICANT NAMED EXPLICITLY — if the user says the person is a "client", "applicant", "claimant", or "injured worker" (e.g. "cases for client Martinez", "a client named Martinez", "applicant Serrato") → that is NOT ambiguous. Call searchCases({ searchText: "[Name]" }) directly (or combinedSearch with applicantName if other filters are present). Do NOT ask the staff-or-client question.
 • STAFF NAMED EXPLICITLY — if a role word (attorney/paralegal/coordinator/…) or "handled by"/"assigned to" is present → call getByStaff({ name: "[Name]", jobRole? }) directly (or combinedSearch with staffName). Do NOT ask.
   EXCEPTION — if the name in the message is part of a CASE name ("[Name] vs [Company]", "[Name] v. [Company]") rather than a bare staff name, that is NOT a staff search — the person named is the case's applicant, not a staff member. Call getCaseParties with that full string as caseName (NOT caseNumber — a case name is not a case number) for a general "who are the parties" question, or getCaseFullDetail with that caseName for a specific field (attorney/paralegal/coordinator/venue/insurance carrier/injury).
-• AMBIGUOUS BARE NAME — ONLY when the user gives a bare PERSON'S NAME with NO client/applicant/claimant word AND NO role word AND NO "handled by"/"assigned to"/"staff member", AND it's not already established:
+• AMBIGUOUS BARE NAME — ONLY when the user gives a person's name WITHOUT normal case-search wording such as "cases for [name]", with NO client/applicant/claimant word AND NO role word AND NO "handled by"/"assigned to"/"staff member", AND it's not already established:
   → Do NOT call any tool yet. Reply with exactly: "Is [Name] a staff member (e.g. attorney, paralegal) or an applicant/client? I'll search the right way once you let me know."
   → On the user's clarification, if the request was JUST the name (no other filters): staff/attorney/paralegal/coordinator/"handled by" → call getByStaff({ name: "[Name]" }); applicant/client/claimant → call searchCases({ searchText: "[Name]" }).
   → On the user's clarification, if the request ALSO had other filters (type/venue/status/date/body part/etc.): call combinedSearch with those filters PLUS staffName: "[Name]" (if staff) or applicantName: "[Name]" (if applicant/client). Do NOT use getByStaff/searchCases in that case.
@@ -1248,7 +1313,7 @@ For ALL filter tools: if the required ID or value is missing from the user's mes
 • PERSON NAME inside a combined search — decide which KIND of name it is, then pass the matching parameter (never both):
   - STAFF member — a role word (attorney/paralegal/coordinator/legal secretary/legal assistant) OR "handled by"/"assigned to" → pass staffName. ALSO pass jobRole with the exact case ROLE/SLOT if the user named one (Attorney, Supervisor Attorney, Paralegal, Coordinator, Other Attorney, Other Staff, Assistant Attorney, Senior Associate, Hearing Rep) to filter to that slot — e.g. "open cases where Raj is the paralegal". combinedSearch resolves the name to an ID.
   - APPLICANT/CLIENT — "applicant"/"client"/"claimant"/"injured worker", or the conversation already established the person is the client → pass applicantName.
-  - BARE ambiguous name (no role word, not stated as a client, not already established) → do NOT call combinedSearch yet; follow the AMBIGUOUS BARE NAME rule above (ask staff-or-client first), THEN call combinedSearch with staffName OR applicantName plus the other filters.
+  - A name in normal case-search wording ("cases for [name]") defaults to APPLICANT/CLIENT and is passed as applicantName. A truly bare name with no case-search wording remains ambiguous and follows the clarification rule above.
 • A SINGLE filter criterion PLUS a person's name (e.g. "WCAB cases for John Smith", "venue 5 cases handled by Maria") IS a combined search → call combinedSearch with that filter + the name (routed per the rule above).
 • A SINGLE filter criterion with NO status word and NO person name → use that filter's individual tool (not combinedSearch).
 • A single filter criterion TOGETHER WITH an open/closed/sub-out status (e.g. "Open WCAB cases", "closed cases in venue 5") → call combinedSearch with that filter + status (the single filter tools cannot filter status).
@@ -1264,6 +1329,8 @@ getCaseFullDetail/getCaseTasks/getCaseEvents/getCaseDocuments/getCaseNotes/getCa
   ‼️ "Submitted to JetFile" is NOT a document upload — do NOT call getCaseDocuments for it. getCaseFullDetail carries the JetFile/EAMS submission data.
 • If the result has ambiguous: true, the case NAME matched more than one case — list the candidate case numbers/names from candidates and ask the user which one they mean. Do NOT guess or pick one yourself.
 • Treat "not set" / null values in the result as genuinely missing information — say so plainly, do not invent a value.
+• For JetFile/EAMS submission questions, use data.jetFileSubmissionDate. A null case-level jetFileId does NOT prove the case was never submitted when submission history has a successful date.
+• For body-part ADJ questions, use requestedInjuryAdjNumbers when present. An empty array means that requested body part is not recorded in the returned injuries; say so instead of assigning another injury's ADJ.
 • This is a single-case lookup, not a list search — never call combinedSearch or searchCases for these questions.
 • If the user asks for "everything" / "full detail" / "the full case card" (a comprehensive request, not a narrow single-field question) — the getCaseFullDetail result already carries tasks, events, documents, notes, activities, and accounting alongside the case/parties/injury fields. Your summary MUST touch every one of those sections, even if only with a one-line "no documents on file" / "34 documents on file" — never silently drop a section just because it wasn't the main focus of the question. Follow the CASE ACTIVITIES rule below for how to phrase activities vs. current-state without contradicting yourself.
 
@@ -1308,6 +1375,7 @@ getCaseFullDetail/getCaseTasks/getCaseEvents/getCaseDocuments/getCaseNotes/getCa
 • If the user asks about cheque requests, payments, client costs, settlement fees, or balances on ONE specific case → call getCaseAccounting.
 • If the result has ambiguous: true, list the candidates and ask the user which case they mean — same as getCaseFullDetail.
 • All amounts returned are exactly as stored — never estimate, round, or invent a figure yourself.
+• If currentBalanceAvailable is false, the backend did not provide a case-wide current balance. State that plainly. NEVER use one settlement fee row's remainingBalance as the case-wide balance.
 • Empty accounting arrays mean the case genuinely has no financial records of that type on file — say so plainly, do not invent one.
 • This is a single-case lookup, not a list search — never call combinedSearch or searchCases for these questions.
 
@@ -1362,7 +1430,7 @@ Rules for searchText:
 - Keep searchText SHORT — name, case number, or keyword only.
 
 searchType values:
-- 1 = All Cases  2 = Open only  3 = Closed only  4 = Sub-Out only (status "Sub-d Out" — NOT "Sub-d In")${bareNameDirective}${solYearDirective}${carriedFiltersSection}${partiesFollowUpDirective}${contactDetailDirective}${phase2FollowUpDirective}${venueOfCaseDirective}`;
+- 1 = All Cases  2 = Open only  3 = Closed only  4 = Sub-Out only (status "Sub-d Out" — NOT "Sub-d In")${bareNameDirective}${solYearDirective}${carriedFiltersSection}${mixedRequestDirective}${partiesFollowUpDirective}${contactDetailDirective}${phase2FollowUpDirective}${venueOfCaseDirective}`;
 
     result = streamText({
     model: openai.chat('gpt-4o-mini'), // explicit Chat Completions API — see doc comment at top import for why
@@ -1460,6 +1528,12 @@ searchType values:
       const sectionOutput = lastToolResult?.output as (
         Record<string, unknown> & { success?: boolean }
       ) | undefined;
+
+      if (sectionOutput?.success && sectionOutput.currentBalanceAvailable === false) {
+        return {
+          system: `${systemPrompt}\n\n━━━ CURRENT BALANCE — UNAVAILABLE ━━━\nThe backend result does NOT contain a case-wide current balance. Do not calculate one and do not copy any individual settlement-fee remainingBalance. Reply plainly that the current case balance is not available from the returned accounting data.`,
+        };
+      }
       const SECTION_KEYS = ['documents', 'tasks', 'events', 'notes', 'activities'] as const;
       const sectionKey = sectionOutput?.success
         ? SECTION_KEYS.find((k) => Array.isArray(sectionOutput[k]))
@@ -1518,6 +1592,7 @@ searchType values:
       // match, instead of trusting it to tally a large nested object itself.
       const fullDetailOutput = lastToolResult?.output as {
         success?: boolean;
+        requestedInjuryAdjNumbers?: Record<string, string[]>;
         sectionTotals?: { tasks?: number; events?: number; documents?: number; notes?: number; activities?: number };
         data?: {
           tasks?: unknown[]; events?: unknown[]; documents?: unknown[];
@@ -1525,6 +1600,14 @@ searchType values:
           accounting?: { chequeRequests?: unknown[]; payments?: unknown[]; clientCostsPaid?: unknown[]; settlementFees?: unknown[] };
         };
       } | undefined;
+      if (fullDetailOutput?.success && fullDetailOutput.requestedInjuryAdjNumbers) {
+        const matches = Object.entries(fullDetailOutput.requestedInjuryAdjNumbers)
+          .map(([part, adjs]) => `${part}=${adjs.length > 0 ? adjs.join(', ') : 'NOT RECORDED'}`)
+          .join('; ');
+        return {
+          system: `${systemPrompt}\n\n━━━ REQUESTED BODY-PART ADJ MATCHES ━━━\nThe exact backend matches for the body parts the user named are: ${matches}. State only these mappings. If a part says NOT RECORDED, say no matching injury/body-part record was returned; never assign an ADJ from a different body part.`,
+        };
+      }
       if (fullDetailOutput?.success && fullDetailOutput.data
         && (Array.isArray(fullDetailOutput.data.tasks) || Array.isArray(fullDetailOutput.data.activities))) {
         const d = fullDetailOutput.data;

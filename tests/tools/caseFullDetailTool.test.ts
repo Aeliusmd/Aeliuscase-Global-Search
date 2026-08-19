@@ -13,6 +13,9 @@ import { makeGetCaseFullDetailTool, makeGetCaseTasksTool, SECTION_SAMPLE_CAP } f
 const deps = { apiBaseUrl: 'http://localhost', jwtToken: 'test' };
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const run = (input: Record<string, unknown>) => (makeGetCaseFullDetailTool(deps) as any).execute(input, {} as any);
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const runForQuestion = (queryText: string, input: Record<string, unknown>) =>
+  (makeGetCaseFullDetailTool({ ...deps, queryText }) as any).execute(input, {} as any);
 
 describe('getCaseFullDetail tool', () => {
   it('passes the fetch result through unchanged aside from narrow', async () => {
@@ -40,6 +43,29 @@ describe('getCaseFullDetail tool', () => {
     expect((await run({ caseNumber: 'RP003583', answerScope: 'single_fact' })).narrow).toBe(true);
     expect((await run({ caseNumber: 'RP003583', answerScope: 'full_list' })).narrow).toBe(false);
     expect((await run({ caseNumber: 'RP003583' })).narrow).toBe(false);
+  });
+
+  it('returns exact requested body-part ADJ matches without borrowing another head variant', async () => {
+    vi.mocked(fetchCaseFullDetail).mockResolvedValue({
+      success: true,
+      data: {
+        caseNumber: 'AE-00224', caseName: 'x',
+        injuries: [
+          { bodyPartId: 1, bodyPart: '100 - Head - not specified', adjNumber: 'ADJ1234123' },
+          { bodyPartId: 16, bodyPart: '198 - Head - multiple injury', adjNumber: 'ADJ89745' },
+          { bodyPartId: 8, bodyPart: '141 - Jaw', adjNumber: 'ADJ333333' },
+        ],
+        tasks: [], events: [], documents: [], notes: [], activities: [],
+      },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any);
+
+    const out = await runForQuestion(
+      'What is the ADJ number for the knee and head injury on case AE00224?',
+      { caseNumber: 'AE00224', answerScope: 'single_fact' },
+    );
+
+    expect(out.requestedInjuryAdjNumbers).toEqual({ knee: [], head: ['ADJ1234123'] });
   });
 });
 

@@ -9,7 +9,8 @@ import { makeGetCaseNotesTool } from '@/lib/tools/impl/caseDetail';
 
 const deps = { apiBaseUrl: 'http://localhost', jwtToken: 'test' };
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-const run = (input: Record<string, unknown>) => (makeGetCaseNotesTool(deps) as any).execute(input, {} as any);
+const run = (input: Record<string, unknown>, queryText?: string) =>
+  (makeGetCaseNotesTool({ ...deps, queryText }) as any).execute(input, {} as any);
 
 describe('getCaseNotes tool', () => {
   it('slices notes + case identity off a successful fetch', async () => {
@@ -65,6 +66,46 @@ describe('getCaseNotes tool', () => {
     const out = await run({ caseNumber: 'RP003583' });
     expect(out.success).toBe(true);
     expect(out.notes).toEqual([]);
+  });
+
+  it('returns only settlement notes for a settlement-note question', async () => {
+    vi.mocked(fetchCaseFullDetail).mockResolvedValueOnce({
+      success: true,
+      data: {
+        caseNumber: 'AE-00224',
+        caseName: 'Example',
+        notes: [
+          { id: 1, subject: 'General Note', text: 'ordinary update', category: 'General', createdBy: 'A', createdDate: null },
+          { id: 2, subject: 'Settlement Note', text: 'demand accepted', category: 'General', createdBy: 'B', createdDate: null },
+          { id: 3, subject: 'Negotiations note', text: 'offer made', category: 'General', createdBy: 'C', createdDate: null },
+        ],
+      },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any);
+
+    const out = await run({ caseNumber: 'AE00224', answerScope: 'full_list' }, 'Give me all settlement notes for case AE00224');
+    expect(out.notes).toHaveLength(1);
+    expect(out.notes[0].subject).toBe('Settlement Note');
+    expect(out.notesTotal).toBe(1);
+  });
+
+  it('uses the same settlement subset for a creator question', async () => {
+    vi.mocked(fetchCaseFullDetail).mockResolvedValueOnce({
+      success: true,
+      data: {
+        caseNumber: 'AE-00224',
+        caseName: 'Example',
+        notes: [
+          { id: 1, subject: 'Settlement Note', text: 'settled', category: 'General', createdBy: 'Suvi Dison', createdDate: null },
+          { id: 2, subject: 'Negotiations note', text: 'offer', category: 'General', createdBy: 'Tharushi', createdDate: null },
+        ],
+      },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any);
+
+    const out = await run({ caseNumber: 'AE00224', answerScope: 'single_fact' }, 'Who created the settlement notes on case AE00224?');
+    expect(out.notes).toHaveLength(1);
+    expect(out.notes[0].createdBy).toBe('Suvi Dison');
   });
 
   it('rejects a call with no caseNumber/caseId/caseName (zod refine)', async () => {

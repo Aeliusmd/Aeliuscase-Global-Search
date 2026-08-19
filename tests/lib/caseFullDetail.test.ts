@@ -208,6 +208,30 @@ describe('mapCaseFullDetail — live (RP003583) variant', () => {
   });
 });
 
+describe('mapCaseFullDetail — JetFile submission history', () => {
+  it('maps the earliest successful submission even when case.jetFileId is null', () => {
+    const data = mapCaseFullDetail({
+      case: { jetFileId: null },
+      eamsSubmissions: [
+        { id: 15, jetfileId: null, appStatus: 1, createdDateTime: '2026-07-28T08:31:39Z' },
+        { id: 14, jetfileId: 'JET-224', appStatus: 3, createdDateTime: '2026-07-27T10:00:45Z' },
+        { id: 12, jetfileId: 'JET-224', appStatus: 3, createdDateTime: '2026-07-27T09:30:33Z' },
+      ],
+    });
+
+    expect(data.jetFileId).toBeNull();
+    expect(data.jetFileSubmissionDate).toBe('2026-07-27T09:30:33Z');
+  });
+
+  it('leaves the submission date null when no successful submission exists', () => {
+    const data = mapCaseFullDetail({
+      case: { jetFileId: null },
+      eamsSubmissions: [{ jetfileId: null, appStatus: 1, createdDateTime: '2026-07-28T08:31:39Z' }],
+    });
+    expect(data.jetFileSubmissionDate).toBeNull();
+  });
+});
+
 // Real shape, captured live 2026-07-19 against RP003583 (3 genuine tasks — the
 // live UAT data was cleared/changed minutes later during the same session, a
 // known characteristic of this shared test environment; see project memory).

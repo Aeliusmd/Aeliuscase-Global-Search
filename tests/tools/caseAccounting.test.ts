@@ -10,6 +10,9 @@ import { makeGetCaseAccountingTool } from '@/lib/tools/impl/caseDetail';
 const deps = { apiBaseUrl: 'http://localhost', jwtToken: 'test' };
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const run = (input: Record<string, unknown>) => (makeGetCaseAccountingTool(deps) as any).execute(input, {} as any);
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const runForQuestion = (queryText: string, input: Record<string, unknown>) =>
+  (makeGetCaseAccountingTool({ ...deps, queryText }) as any).execute(input, {} as any);
 
 describe('getCaseAccounting tool', () => {
   it('slices accounting + case identity off a successful fetch', async () => {
@@ -74,6 +77,29 @@ describe('getCaseAccounting tool', () => {
     const out = await run({ caseNumber: 'RP003583' });
     expect(out.success).toBe(true);
     expect(out.accounting).toEqual({ chequeRequests: [], payments: [], clientCostsPaid: [], settlementFees: [] });
+  });
+
+  it('marks a case-wide current balance unavailable instead of selecting an invoice balance', async () => {
+    vi.mocked(fetchCaseFullDetail).mockResolvedValueOnce({
+      success: true,
+      data: {
+        caseNumber: 'AE00224', caseName: 'x',
+        accounting: {
+          chequeRequests: [], payments: [], clientCostsPaid: [],
+          settlementFees: [{ id: 163, invoice: 'ORD-AE-00224-10', amount: 100, remainingBalance: 70 }],
+        },
+      },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any);
+
+    const out = await runForQuestion(
+      'What is the current balance on case AE00224?',
+      { caseNumber: 'AE00224', answerScope: 'single_fact' },
+    );
+
+    expect(out.currentBalanceAvailable).toBe(false);
+    expect(out.currentBalance).toBeNull();
+    expect(out.accounting.settlementFees[0].remainingBalance).toBe(70);
   });
 
   it('rejects a call with no caseNumber/caseId/caseName (zod refine)', async () => {

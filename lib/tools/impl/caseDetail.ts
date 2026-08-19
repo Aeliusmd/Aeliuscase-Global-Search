@@ -2,6 +2,7 @@ import { tool, zodSchema } from 'ai';
 import { z } from 'zod';
 import type { CaseAccountingToolOutput, CaseActivitiesToolOutput, CaseDocumentsToolOutput, CaseEventsToolOutput, CaseFullDetailToolOutput, CaseNotesToolOutput, CaseSectionTotals, CaseTasksToolOutput } from '@/types/caseFullDetail';
 import { fetchCaseFullDetail } from '@/lib/caseFullDetail';
+import { BODY_PART_CODES } from '@/lib/bodyParts';
 
 /**
  * Max rows of any one section handed to the model. The FULL count always
@@ -75,6 +76,49 @@ function relevantActivities<T extends { description?: string | null; type?: stri
   return all;
 }
 
+function relevantNotes<T extends { subject?: string | null; text?: string | null; category?: string | null }>(
+  rows: T[] | undefined,
+  queryText: string | undefined,
+): T[] {
+  const all = rows ?? [];
+  const query = queryText ?? '';
+  const searchable = (row: T) => `${row.subject ?? ''} ${row.category ?? ''} ${row.text ?? ''}`;
+
+  if (/\bsettlement\s+notes?\b/i.test(query)) {
+    return all.filter((row) => /\bsettlement\b/i.test(searchable(row)));
+  }
+  if (/\bnegotiation\s+notes?\b/i.test(query)) {
+    return all.filter((row) => /\bnegotiat(?:ion|ions|ing)?\b/i.test(searchable(row)));
+  }
+  return all;
+}
+
+function requestedInjuryAdjNumbers(
+  injuries: Array<{ bodyPartId?: number | null; adjNumber?: string | null }> | undefined,
+  queryText: string | undefined,
+): Record<string, string[]> | undefined {
+  const query = queryText ?? '';
+  const requestedBases = [...new Set(BODY_PART_CODES.filter(({ label }) => {
+    const base = label.split(/[-/]/)[0].toLowerCase();
+    const variants = base.endsWith('s') ? [base, base.slice(0, -1)] : [base, `${base}s`];
+    return variants.some((word) => new RegExp(`\\b${word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i').test(query));
+  }).map(({ label }) => label.split(/[-/]/)[0].toLowerCase()))];
+  if (requestedBases.length === 0 || !/\badj\b|adj\s*(?:number|#|no)/i.test(query)) return undefined;
+
+  return Object.fromEntries(requestedBases.map((key) => {
+    // A bare "head" means the canonical Head row (code 1), not Head-multiple
+    // (code 16). The exact base label always wins over its qualified variants.
+    const exact = BODY_PART_CODES.find(({ label }) => label.toLowerCase() === key);
+    const codes = exact
+      ? [exact.code]
+      : BODY_PART_CODES.filter(({ label }) => label.split(/[-/]/)[0].toLowerCase() === key).map(({ code }) => code);
+    const matches = [...new Set((injuries ?? [])
+      .filter((injury) => codes.includes(injury.bodyPartId ?? -1) && injury.adjNumber)
+      .map((injury) => injury.adjNumber as string))];
+    return [key, matches];
+  }));
+}
+
 /**
  * Live UX bug (2026-07-29): "who is the applicant on above case?" got the
  * same long, padded answer as a general "show me the parties" question —
@@ -119,7 +163,7 @@ const caseRefSchema = z
 type CaseRefInput = { caseNumber?: string; caseId?: number; caseName?: string; answerScope?: 'single_fact' | 'full_list' };
 
 export function makeGetCaseFullDetailTool(deps: CaseDetailDeps) {
-  const { apiBaseUrl, jwtToken, appOrigin } = deps;
+  const { apiBaseUrl, jwtToken, appOrigin, queryText } = deps;
   return tool({
     description:
       'Fetch full detail for ONE specific AeliusCase case — venue, injury/body parts, statute of limitations (SOL), date of injury (DOI), ADJ number, applicant/employer/insurance-carrier demographics, and case-level staff names. Call this for a single case identified by case number, case ID, or case name. If the result has ambiguous:true, the caseName matched more than one case — list the candidates and ask the user which one they mean.'
@@ -144,6 +188,7 @@ export function makeGetCaseFullDetailTool(deps: CaseDetailDeps) {
         ...result,
         narrow,
         sectionTotals,
+        requestedInjuryAdjNumbers: requestedInjuryAdjNumbers(d.injuries, queryText),
         data: {
           ...d,
           tasks: cap(d.tasks),
@@ -237,7 +282,7 @@ export function makeGetCaseDocumentsTool(deps: CaseDetailDeps) {
 }
 
 export function makeGetCaseNotesTool(deps: CaseDetailDeps) {
-  const { apiBaseUrl, jwtToken, appOrigin } = deps;
+  const { apiBaseUrl, jwtToken, appOrigin, queryText } = deps;
   return tool({
     description:
       'Fetch the notes for ONE specific AeliusCase case — subject, text, category, author, date. Call this for questions like "give me all settlement notes" or "what notes mention Matrix" on a specific case. If the result has ambiguous:true, the caseName matched more than one case — list the candidates and ask the user which one they mean.'
@@ -250,12 +295,13 @@ export function makeGetCaseNotesTool(deps: CaseDetailDeps) {
       if (!result.success) {
         return { success: false, ambiguous: result.ambiguous, candidates: result.candidates, narrow, error: result.error };
       }
+      const notes = relevantNotes(result.data?.notes, queryText);
       return {
         success: true,
         caseNumber: result.data?.caseNumber,
         caseName: result.data?.caseName,
-        notes: cap(result.data?.notes),
-        notesTotal: result.data?.notes?.length ?? 0,
+        notes: cap(notes),
+        notesTotal: notes.length,
         narrow,
       };
     },
@@ -290,7 +336,7 @@ export function makeGetCaseActivitiesTool(deps: CaseDetailDeps) {
 }
 
 export function makeGetCaseAccountingTool(deps: CaseDetailDeps) {
-  const { apiBaseUrl, jwtToken, appOrigin } = deps;
+  const { apiBaseUrl, jwtToken, appOrigin, queryText } = deps;
   return tool({
     description:
       'Fetch the financial summary for ONE specific AeliusCase case — cheque requests, payments, client costs paid, settlement fees. Call this for questions like "what cheque requests exist" or "what is the current balance" on a specific case. If the result has ambiguous:true, the caseName matched more than one case — list the candidates and ask the user which one they mean.'
@@ -303,11 +349,13 @@ export function makeGetCaseAccountingTool(deps: CaseDetailDeps) {
       if (!result.success) {
         return { success: false, ambiguous: result.ambiguous, candidates: result.candidates, narrow, error: result.error };
       }
+      const asksCurrentBalance = /\bcurrent\s+balance\b/i.test(queryText ?? '');
       return {
         success: true,
         caseNumber: result.data?.caseNumber,
         caseName: result.data?.caseName,
         accounting: result.data?.accounting,
+        ...(asksCurrentBalance ? { currentBalance: null, currentBalanceAvailable: false } : {}),
         narrow,
       };
     },
