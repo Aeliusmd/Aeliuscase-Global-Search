@@ -1159,6 +1159,57 @@ Re-send every prior filter above (with the same values) plus the new one. Only d
 ‼️ THIS TURN — The user wants the cases in the SAME VENUE as the case they were viewing (${venueOfCaseRef}). That case's venue is venueId ${venueOfCaseId}. Call combinedSearch with venueId: ${venueOfCaseId} (plus any open/closed status they mention). Do NOT ask which venue — use ${venueOfCaseId}.`
     : '';
 
+  /**
+   * A plural, list-shaped case search sitting alongside a single-case request:
+   * "Show me open cases AND the parties for case AE00224".
+   *
+   * Live gap fixed 2026-08-19. The forced single-case branches below REPLACE
+   * the tool menu with one tool — which is exactly what they are for, since
+   * that is what stops the model reaching for a filter tool when the user
+   * asked about one case. But a compound request loses its other half: only
+   * getCaseParties ran, and the "open cases" list was silently dropped. The
+   * answer was correct, just incomplete, which is the harder kind to notice.
+   *
+   * isMixedCaseSearchAndPartyRequest (lib/searchContext.ts) already covers the
+   * narrow "cases FOR <name> and parties for <case>" shape; this catches the
+   * general one — any status/filter-qualified plural "cases" clause. Rather
+   * than adding a branch per phrasing, the forced tool is kept and the list
+   * tools are ADDED beside it, so the model can complete both halves.
+   */
+  const LIST_SEARCH_CLAUSE_RE =
+    /\b(?:all|open|closed|active|pending|sub[\s-]?out|recent)\s+cases\b|\bcases\s+(?:for|of|in|with|handled\s+by|assigned\s+to)\b/i;
+  const compoundListRequest = LIST_SEARCH_CLAUSE_RE.test(lastUserText);
+
+  /** Keep a forced single-case tool, but expose the list-search tools too. */
+  // apiBaseUrl is only narrowed to string by the early return above, and that
+  // narrowing does not reach inside a closure — capture it once.
+  const resolvedApiBaseUrl: string = apiBaseUrl;
+
+  function withListSearchTools(
+    sel: ReturnType<typeof selectToolsForDomains>,
+  ): ReturnType<typeof selectToolsForDomains> {
+    if (!compoundListRequest) return sel;
+    const reg = buildToolRegistry({
+      apiBaseUrl: resolvedApiBaseUrl, jwtToken, appOrigin, queryText: lastUserText,
+      enforcedSearchType, enforcedLabel,
+      personSignal, personName, allowedFilterKeys, resolvedDateRange, resolvedRoleSlot,
+    });
+    const tools = { ...sel.tools };
+    for (const name of ['searchCases', 'combinedSearch']) {
+      const def = reg.get(name)?.definition;
+      if (def) tools[name] = def;
+    }
+    // forcedCombined stays false — combinedSearch is offered, never forced, so
+    // the model still picks the right list tool for the search half.
+    return { ...sel, tools, activeTools: Object.keys(tools) };
+  }
+
+  const compoundRequestDirective = compoundListRequest
+    ? `
+
+‼️ THIS TURN — TWO REQUESTS IN ONE MESSAGE: the user asked for a LIST of cases AND for something about one specific case. Complete BOTH: call the single-case tool for the named case, and call searchCases/combinedSearch for the list. Do not answer only one half.`
+    : '';
+
   // activeDomains was resolved earlier (folded into the Promise.all above via resolveDomains()).
   let selectedTools: ReturnType<typeof selectToolsForDomains>;
   if (bareName || solNeedsYear) {
@@ -1188,9 +1239,9 @@ Re-send every prior filter above (with the same values) plus the new one. Only d
       personSignal, personName, allowedFilterKeys, resolvedDateRange, resolvedRoleSlot,
     });
     const def = reg.get('getCaseFullDetail')?.definition;
-    selectedTools = def
+    selectedTools = withListSearchTools(def
       ? { tools: { getCaseFullDetail: def }, activeTools: ['getCaseFullDetail'], forcedCombined: false, requireTool: true }
-      : { tools: {}, activeTools: [], forcedCombined: false, requireTool: false };
+      : { tools: {}, activeTools: [], forcedCombined: false, requireTool: false });
   } else if (comprehensiveCaseDetailQuestion(lastUserText)) {
     // Expose ONLY getCaseFullDetail — see comprehensiveCaseDetailQuestion's doc
     // comment for why getCaseParties must not be offered as an alternative here.
@@ -1199,15 +1250,15 @@ Re-send every prior filter above (with the same values) plus the new one. Only d
       personSignal, personName, allowedFilterKeys, resolvedDateRange, resolvedRoleSlot,
     });
     const def = reg.get('getCaseFullDetail')?.definition;
-    selectedTools = def
+    selectedTools = withListSearchTools(def
       ? { tools: { getCaseFullDetail: def }, activeTools: ['getCaseFullDetail'], forcedCombined: false, requireTool: true }
-      : { tools: {}, activeTools: [], forcedCombined: false, requireTool: false };
+      : { tools: {}, activeTools: [], forcedCombined: false, requireTool: false });
   } else if (partiesFollowUpRef) {
     // Expose ONLY getCaseParties so the model can't fall back to a filter tool.
     // Built directly (not via buildToolRegistry) so narrowField can be set
     // per-call from partiesFollowUpNarrow — see PartiesDeps' doc comment.
     const def = makeGetCasePartiesTool({ apiBaseUrl, jwtToken, narrowField: partiesFollowUpNarrow });
-    selectedTools = { tools: { getCaseParties: def }, activeTools: ['getCaseParties'], forcedCombined: false, requireTool: true };
+    selectedTools = withListSearchTools({ tools: { getCaseParties: def }, activeTools: ['getCaseParties'], forcedCombined: false, requireTool: true });
   } else if (phase2FollowUpTool && phase2FollowUpRef) {
     // Expose ONLY the one Phase-2 tool the follow-up is about, with the case
     // it's anaphoric to — see anaphoricPhase2Tool's doc comment.
@@ -1216,9 +1267,9 @@ Re-send every prior filter above (with the same values) plus the new one. Only d
       personSignal, personName, allowedFilterKeys, resolvedDateRange, resolvedRoleSlot,
     });
     const def = reg.get(phase2FollowUpTool)?.definition;
-    selectedTools = def
+    selectedTools = withListSearchTools(def
       ? { tools: { [phase2FollowUpTool]: def }, activeTools: [phase2FollowUpTool], forcedCombined: false, requireTool: true }
-      : { tools: {}, activeTools: [], forcedCombined: false, requireTool: false };
+      : { tools: {}, activeTools: [], forcedCombined: false, requireTool: false });
   } else if (venueOfCaseId) {
     // "cases in that venue" — force combinedSearch with the resolved venueId.
     const reg = buildToolRegistry({
@@ -1230,7 +1281,10 @@ Re-send every prior filter above (with the same values) plus the new one. Only d
       ? { tools: { combinedSearch: def }, activeTools: ['combinedSearch'], forcedCombined: true, requireTool: true }
       : { tools: {}, activeTools: [], forcedCombined: false, requireTool: false };
   } else {
-    selectedTools = selectToolsForDomains(activeDomains, {
+    // withListSearchTools applies here too: a Phase-2 domain can claim the turn
+    // exclusively (selectToolsForDomains defers casesDomain to it), which drops
+    // the list half of "closed cases AND how many documents on case X".
+    selectedTools = withListSearchTools(selectToolsForDomains(activeDomains, {
       message: classifyText,
       registry: buildToolRegistry({
         apiBaseUrl, jwtToken, appOrigin, queryText: lastUserText, enforcedSearchType, enforcedLabel,
@@ -1238,7 +1292,7 @@ Re-send every prior filter above (with the same values) plus the new one. Only d
       }),
       intents,
       selectorOpts: { explicitStatus: enforcedSearchType !== 1, hasPerson: personSignal !== 'none', hasResolvedDate: !!resolvedDateRange, forceContinuation: refining },
-    });
+    }));
   }
 
   let result;
@@ -1443,7 +1497,7 @@ Rules for searchText:
 - Keep searchText SHORT — name, case number, or keyword only.
 
 searchType values:
-- 1 = All Cases  2 = Open only  3 = Closed only  4 = Sub-Out only (status "Sub-d Out" — NOT "Sub-d In")${bareNameDirective}${solYearDirective}${carriedFiltersSection}${mixedRequestDirective}${partiesFollowUpDirective}${contactDetailDirective}${phase2FollowUpDirective}${venueOfCaseDirective}`;
+- 1 = All Cases  2 = Open only  3 = Closed only  4 = Sub-Out only (status "Sub-d Out" — NOT "Sub-d In")${bareNameDirective}${solYearDirective}${carriedFiltersSection}${mixedRequestDirective}${partiesFollowUpDirective}${contactDetailDirective}${phase2FollowUpDirective}${venueOfCaseDirective}${compoundRequestDirective}`;
 
     result = streamText({
     model: openai.chat('gpt-4o-mini'), // explicit Chat Completions API — see doc comment at top import for why
@@ -1486,9 +1540,18 @@ searchType values:
       }>;
     }) => {
       if (stepNumber === 0) {
-        const forcedToolName = partiesFollowUpRef
-          ? 'getCaseParties'
-          : selectedTools.forcedCombined ? 'combinedSearch' : null;
+        // Pinning step 0 to ONE tool is what stops the model wandering off to a
+        // filter tool for a single-case question — but in a compound request it
+        // also pins the whole turn to one half. Live 2026-08-19: "show me all
+        // WCAB cases and what is the venue on case AE00224" answered the venue,
+        // said "now let me show you all the WCAB cases", and never called the
+        // search. Leave the choice open when both halves are present; the menu
+        // and the compound directive already steer it.
+        const forcedToolName = compoundListRequest
+          ? null
+          : partiesFollowUpRef
+            ? 'getCaseParties'
+            : selectedTools.forcedCombined ? 'combinedSearch' : null;
         if (forcedToolName) return { toolChoice: { type: 'tool' as const, toolName: forcedToolName } };
         if (selectedTools.requireTool) return { toolChoice: 'required' as const };
         return {};
