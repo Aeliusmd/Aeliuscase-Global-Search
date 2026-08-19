@@ -47,6 +47,75 @@ export interface CaseDetailDeps {
   queryText?: string;
 }
 
+/**
+ * Rows matching a search term the MODEL supplied, searched across the WHOLE
+ * section before SECTION_SAMPLE_CAP is applied. Returns null when there is no
+ * usable term, so callers can fall back to their own selection.
+ *
+ * Live bug fixed 2026-08-19 — the cap hands the model only the 25 newest rows
+ * of a section, so anything older was invisible and the model answered from
+ * whatever it COULD see instead of saying it had not found the record. Two
+ * confirmed wrong answers on case AE-00224, both verified against the raw API:
+ *
+ *   "who uploaded the Verification form"  -> "Suvi Dison"  (really Bhagya
+ *      Adhikara — that document sits at position 30 of 90)
+ *   "what was the last letter created"    -> an unrelated 19 Aug activity
+ *      (really the 10 Aug "6002 Proof of Service" letter, at index 114 of 1253)
+ *
+ * and the same document reported as "couldn't find a document named
+ * Verification form" on a differently-worded turn — wrong two different ways.
+ *
+ * The previous fix filtered by hard-coded phrases (settlement /
+ * demographics+matrix / legal form), which only ever covered those three
+ * questions. Letting the model name the term it is looking for — exactly how
+ * answerScope already lets it classify answer length — covers every phrasing
+ * without a list to maintain. The hard-coded selectors stay as a fallback for
+ * when the model supplies nothing.
+ */
+function keywordMatches<T>(
+  rows: T[],
+  searchKeyword: string | undefined,
+  searchableText: (row: T) => string,
+): T[] | null {
+  const term = searchKeyword?.trim();
+  if (!term || term.length < 2) return null;
+  // Build the pattern per word so that:
+  //  - whitespace matches any run of whitespace ("Verification   form"), and
+  //  - a trailing plural "s" is optional, since the model naturally pluralises
+  //    the user's wording while the stored row does not — live 2026-08-19,
+  //    searchKeyword "demographics" missed every "Demographic sheet ..." row
+  //    and answered from the two that happened to match, giving the wrong date.
+  const pattern = term
+    .split(/\s+/)
+    .map((word) => word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/s$/i, 's?'))
+    .join('\\s+');
+  const re = new RegExp(pattern, 'i');
+  return rows.filter((row) => re.test(searchableText(row)));
+}
+
+/** Everything a section tool needs to report a keyword search back to the model. */
+function sectionSearchResult<T>(
+  all: T[],
+  searchKeyword: string | undefined,
+  searchableText: (row: T) => string,
+  fallback: (rows: T[]) => T[],
+): { rows: T[]; total: number; searchedFor?: string; searchMatched?: boolean; sectionSize?: number } {
+  const matched = keywordMatches(all, searchKeyword, searchableText);
+  if (matched === null) {
+    const selected = fallback(all);
+    return { rows: cap(selected), total: selected.length };
+  }
+  return {
+    rows: cap(matched),
+    total: matched.length,
+    searchedFor: searchKeyword?.trim(),
+    searchMatched: matched.length > 0,
+    // The unfiltered size, so the model can say "1 of 90" and never mistake a
+    // filtered count for the section total.
+    sectionSize: all.length,
+  };
+}
+
 function relevantDocuments<T extends { name?: string | null; category?: string | null }>(
   rows: T[] | undefined,
   queryText: string | undefined,
@@ -149,18 +218,23 @@ const answerScopeField = z.enum(['single_fact', 'full_list']).optional().describ
   'Whether the user asked about ONE specific detail ("single_fact") or wants a general/overview answer ("full_list") — see the tool description for how each is handled.',
 );
 
+const searchKeywordField = z.string().optional().describe(
+  'The word or phrase the user is looking for INSIDE this section, when they are after a specific record rather than the whole list — e.g. "Verification form", "letter", "mediation", "settlement", "demographics". Only the newest 25 rows are returned by default, so WITHOUT this term an older record is invisible and you would answer from the wrong row. Set it whenever the user names a document, note, task, event or activity. Leave it unset for "how many..." or "show me all..." questions, which need the whole section.',
+);
+
 const caseRefSchema = z
   .object({
     caseNumber: z.string().optional().describe('Case number string, e.g. "RP003583". Prefer this over caseId/caseName.'),
     caseId: z.number().int().optional().describe('Numeric case ID. Use only when caseNumber is not known.'),
     caseName: z.string().optional().describe('Dashboard-style case name, e.g. "Elgin Perdomo vs Allied Universal". May match more than one case.'),
     answerScope: answerScopeField,
+    searchKeyword: searchKeywordField,
   })
   .refine((d) => d.caseNumber !== undefined || d.caseId !== undefined || d.caseName !== undefined, {
     message: 'Provide caseNumber, caseId, or caseName.',
   });
 
-type CaseRefInput = { caseNumber?: string; caseId?: number; caseName?: string; answerScope?: 'single_fact' | 'full_list' };
+type CaseRefInput = { caseNumber?: string; caseId?: number; caseName?: string; answerScope?: 'single_fact' | 'full_list'; searchKeyword?: string };
 
 export function makeGetCaseFullDetailTool(deps: CaseDetailDeps) {
   const { apiBaseUrl, jwtToken, appOrigin, queryText } = deps;
@@ -170,7 +244,7 @@ export function makeGetCaseFullDetailTool(deps: CaseDetailDeps) {
       + answerScopeGuidance('"what is the venue on RP2010"', '"show me everything on case RP2010"'),
     inputSchema: zodSchema(caseRefSchema),
     execute: async (input): Promise<CaseFullDetailToolOutput> => {
-      const { caseNumber, caseId, caseName, answerScope } = input as CaseRefInput;
+      const { caseNumber, caseId, caseName, answerScope, searchKeyword } = input as CaseRefInput;
       const result = await fetchCaseFullDetail({ apiBaseUrl, jwtToken, caseNumber, caseId, caseName, appOrigin });
       const narrow = answerScope === 'single_fact';
       if (!result.success || !result.data) return { ...result, narrow };
@@ -210,18 +284,22 @@ export function makeGetCaseTasksTool(deps: CaseDetailDeps) {
       + answerScopeGuidance('"who is assigned to the settlement task"', '"what are the tasks on this case"'),
     inputSchema: zodSchema(caseRefSchema),
     execute: async (input): Promise<CaseTasksToolOutput> => {
-      const { caseNumber, caseId, caseName, answerScope } = input as CaseRefInput;
+      const { caseNumber, caseId, caseName, answerScope, searchKeyword } = input as CaseRefInput;
       const narrow = answerScope === 'single_fact';
       const result = await fetchCaseFullDetail({ apiBaseUrl, jwtToken, caseNumber, caseId, caseName, appOrigin });
       if (!result.success) {
         return { success: false, ambiguous: result.ambiguous, candidates: result.candidates, narrow, error: result.error };
       }
+      const picked = sectionSearchResult(result.data?.tasks ?? [], searchKeyword, (r) => `${r.title ?? ''} ${r.category ?? ''} ${r.description ?? ''}`, (rows) => rows);
       return {
         success: true,
         caseNumber: result.data?.caseNumber,
         caseName: result.data?.caseName,
-        tasks: cap(result.data?.tasks),
-        tasksTotal: result.data?.tasks?.length ?? 0,
+        tasks: picked.rows,
+        tasksTotal: picked.total,
+        searchedFor: picked.searchedFor,
+        searchMatched: picked.searchMatched,
+        sectionSize: picked.sectionSize,
         narrow,
       };
     },
@@ -236,18 +314,22 @@ export function makeGetCaseEventsTool(deps: CaseDetailDeps) {
       + answerScopeGuidance('"when is the next hearing"', '"what hearings are scheduled this month"'),
     inputSchema: zodSchema(caseRefSchema),
     execute: async (input): Promise<CaseEventsToolOutput> => {
-      const { caseNumber, caseId, caseName, answerScope } = input as CaseRefInput;
+      const { caseNumber, caseId, caseName, answerScope, searchKeyword } = input as CaseRefInput;
       const narrow = answerScope === 'single_fact';
       const result = await fetchCaseFullDetail({ apiBaseUrl, jwtToken, caseNumber, caseId, caseName, appOrigin });
       if (!result.success) {
         return { success: false, ambiguous: result.ambiguous, candidates: result.candidates, narrow, error: result.error };
       }
+      const picked = sectionSearchResult(result.data?.events ?? [], searchKeyword, (r) => `${r.title ?? ''} ${r.type ?? ''} ${r.notes ?? ''}`, (rows) => rows);
       return {
         success: true,
         caseNumber: result.data?.caseNumber,
         caseName: result.data?.caseName,
-        events: cap(result.data?.events),
-        eventsTotal: result.data?.events?.length ?? 0,
+        events: picked.rows,
+        eventsTotal: picked.total,
+        searchedFor: picked.searchedFor,
+        searchMatched: picked.searchMatched,
+        sectionSize: picked.sectionSize,
         narrow,
       };
     },
@@ -262,19 +344,22 @@ export function makeGetCaseDocumentsTool(deps: CaseDetailDeps) {
       + answerScopeGuidance('"who uploaded the settlement document"', '"show me all documents on this case"'),
     inputSchema: zodSchema(caseRefSchema),
     execute: async (input): Promise<CaseDocumentsToolOutput> => {
-      const { caseNumber, caseId, caseName, answerScope } = input as CaseRefInput;
+      const { caseNumber, caseId, caseName, answerScope, searchKeyword } = input as CaseRefInput;
       const narrow = answerScope === 'single_fact';
       const result = await fetchCaseFullDetail({ apiBaseUrl, jwtToken, caseNumber, caseId, caseName, appOrigin });
       if (!result.success) {
         return { success: false, ambiguous: result.ambiguous, candidates: result.candidates, narrow, error: result.error };
       }
-      const documents = relevantDocuments(result.data?.documents, queryText);
+      const picked = sectionSearchResult(result.data?.documents ?? [], searchKeyword, (r) => `${r.name ?? ''} ${r.category ?? ''}`, (rows) => relevantDocuments(rows, queryText));
       return {
         success: true,
         caseNumber: result.data?.caseNumber,
         caseName: result.data?.caseName,
-        documents: cap(documents),
-        documentsTotal: documents.length,
+        documents: picked.rows,
+        documentsTotal: picked.total,
+        searchedFor: picked.searchedFor,
+        searchMatched: picked.searchMatched,
+        sectionSize: picked.sectionSize,
         narrow,
       };
     },
@@ -289,19 +374,22 @@ export function makeGetCaseNotesTool(deps: CaseDetailDeps) {
       + answerScopeGuidance('"who created the settlement note"', '"give me all settlement notes"'),
     inputSchema: zodSchema(caseRefSchema),
     execute: async (input): Promise<CaseNotesToolOutput> => {
-      const { caseNumber, caseId, caseName, answerScope } = input as CaseRefInput;
+      const { caseNumber, caseId, caseName, answerScope, searchKeyword } = input as CaseRefInput;
       const narrow = answerScope === 'single_fact';
       const result = await fetchCaseFullDetail({ apiBaseUrl, jwtToken, caseNumber, caseId, caseName, appOrigin });
       if (!result.success) {
         return { success: false, ambiguous: result.ambiguous, candidates: result.candidates, narrow, error: result.error };
       }
-      const notes = relevantNotes(result.data?.notes, queryText);
+      const picked = sectionSearchResult(result.data?.notes ?? [], searchKeyword, (r) => `${r.subject ?? ''} ${r.category ?? ''} ${r.text ?? ''}`, (rows) => relevantNotes(rows, queryText));
       return {
         success: true,
         caseNumber: result.data?.caseNumber,
         caseName: result.data?.caseName,
-        notes: cap(notes),
-        notesTotal: notes.length,
+        notes: picked.rows,
+        notesTotal: picked.total,
+        searchedFor: picked.searchedFor,
+        searchMatched: picked.searchMatched,
+        sectionSize: picked.sectionSize,
         narrow,
       };
     },
@@ -316,19 +404,22 @@ export function makeGetCaseActivitiesTool(deps: CaseDetailDeps) {
       + answerScopeGuidance('"when was the last activity performed"', '"what are the 5 most recent activities"'),
     inputSchema: zodSchema(caseRefSchema),
     execute: async (input): Promise<CaseActivitiesToolOutput> => {
-      const { caseNumber, caseId, caseName, answerScope } = input as CaseRefInput;
+      const { caseNumber, caseId, caseName, answerScope, searchKeyword } = input as CaseRefInput;
       const narrow = answerScope === 'single_fact';
       const result = await fetchCaseFullDetail({ apiBaseUrl, jwtToken, caseNumber, caseId, caseName, appOrigin });
       if (!result.success) {
         return { success: false, ambiguous: result.ambiguous, candidates: result.candidates, narrow, error: result.error };
       }
-      const activities = relevantActivities(result.data?.activities, queryText);
+      const picked = sectionSearchResult(result.data?.activities ?? [], searchKeyword, (r) => `${r.description ?? ''} ${r.type ?? ''}`, (rows) => relevantActivities(rows, queryText));
       return {
         success: true,
         caseNumber: result.data?.caseNumber,
         caseName: result.data?.caseName,
-        activities: cap(activities),
-        activitiesTotal: activities.length,
+        activities: picked.rows,
+        activitiesTotal: picked.total,
+        searchedFor: picked.searchedFor,
+        searchMatched: picked.searchMatched,
+        sectionSize: picked.sectionSize,
         narrow,
       };
     },
@@ -343,7 +434,7 @@ export function makeGetCaseAccountingTool(deps: CaseDetailDeps) {
       + answerScopeGuidance('"what is the current balance"', '"what are the settlement fees"'),
     inputSchema: zodSchema(caseRefSchema),
     execute: async (input): Promise<CaseAccountingToolOutput> => {
-      const { caseNumber, caseId, caseName, answerScope } = input as CaseRefInput;
+      const { caseNumber, caseId, caseName, answerScope, searchKeyword } = input as CaseRefInput;
       const narrow = answerScope === 'single_fact';
       const result = await fetchCaseFullDetail({ apiBaseUrl, jwtToken, caseNumber, caseId, caseName, appOrigin });
       if (!result.success) {

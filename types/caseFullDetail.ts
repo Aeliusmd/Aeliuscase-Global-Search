@@ -285,6 +285,13 @@ export interface CaseTasksToolOutput {
   tasks?: CaseTaskSummary[];
   /** TRUE total row count — `tasks` above is capped, see SECTION_SAMPLE_CAP. */
   tasksTotal?: number;
+  /** Echo of the searchKeyword the model supplied, when it searched this section. */
+  searchedFor?: string;
+  /** False means the search term matched NOTHING in the whole section — say so;
+   *  never substitute a different row. Absent when no search was run. */
+  searchMatched?: boolean;
+  /** Unfiltered size of the section, so a filtered count is never read as the total. */
+  sectionSize?: number;
   narrow?: boolean;
   error?: string;
 }
@@ -299,6 +306,13 @@ export interface CaseEventsToolOutput {
   events?: CaseEventSummary[];
   /** TRUE total row count — `events` above is capped, see SECTION_SAMPLE_CAP. */
   eventsTotal?: number;
+  /** Echo of the searchKeyword the model supplied, when it searched this section. */
+  searchedFor?: string;
+  /** False means the search term matched NOTHING in the whole section — say so;
+   *  never substitute a different row. Absent when no search was run. */
+  searchMatched?: boolean;
+  /** Unfiltered size of the section, so a filtered count is never read as the total. */
+  sectionSize?: number;
   narrow?: boolean;
   error?: string;
 }
@@ -313,6 +327,13 @@ export interface CaseDocumentsToolOutput {
   documents?: CaseDocumentSummary[];
   /** TRUE total row count — `documents` above is capped, see SECTION_SAMPLE_CAP. */
   documentsTotal?: number;
+  /** Echo of the searchKeyword the model supplied, when it searched this section. */
+  searchedFor?: string;
+  /** False means the search term matched NOTHING in the whole section — say so;
+   *  never substitute a different row. Absent when no search was run. */
+  searchMatched?: boolean;
+  /** Unfiltered size of the section, so a filtered count is never read as the total. */
+  sectionSize?: number;
   narrow?: boolean;
   error?: string;
 }
@@ -327,6 +348,13 @@ export interface CaseNotesToolOutput {
   notes?: CaseNoteSummary[];
   /** TRUE total row count — `notes` above is capped, see SECTION_SAMPLE_CAP. */
   notesTotal?: number;
+  /** Echo of the searchKeyword the model supplied, when it searched this section. */
+  searchedFor?: string;
+  /** False means the search term matched NOTHING in the whole section — say so;
+   *  never substitute a different row. Absent when no search was run. */
+  searchMatched?: boolean;
+  /** Unfiltered size of the section, so a filtered count is never read as the total. */
+  sectionSize?: number;
   narrow?: boolean;
   error?: string;
 }
@@ -341,6 +369,13 @@ export interface CaseActivitiesToolOutput {
   activities?: CaseActivitySummary[];
   /** TRUE total row count — `activities` above is capped, see SECTION_SAMPLE_CAP. */
   activitiesTotal?: number;
+  /** Echo of the searchKeyword the model supplied, when it searched this section. */
+  searchedFor?: string;
+  /** False means the search term matched NOTHING in the whole section — say so;
+   *  never substitute a different row. Absent when no search was run. */
+  searchMatched?: boolean;
+  /** Unfiltered size of the section, so a filtered count is never read as the total. */
+  sectionSize?: number;
   narrow?: boolean;
   error?: string;
 }

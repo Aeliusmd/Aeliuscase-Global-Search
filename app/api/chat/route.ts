@@ -1319,6 +1319,13 @@ For ALL filter tools: if the required ID or value is missing from the user's mes
 • A single filter criterion TOGETHER WITH an open/closed/sub-out status (e.g. "Open WCAB cases", "closed cases in venue 5") → call combinedSearch with that filter + status (the single filter tools cannot filter status).
 • If combinedSearch reports multiple staff matches, relay the question — ask which person.
 
+━━━ PHASE-2 SECTIONS — SEARCHING FOR ONE SPECIFIC RECORD ━━━
+The tasks/events/documents/notes/activities arrays return only the NEWEST 25 rows by default, out of a section that can hold hundreds. A record older than that is simply absent from what you can see.
+• Whenever the user names a specific record — "the Verification form", "the last letter", "notes about mediation", "the settlement document" — you MUST pass searchKeyword with that term. The tool then searches the ENTIRE section instead of the newest 25.
+• If the result has searchMatched: false, the term matched NOTHING anywhere in that section. Say so plainly ("there is no document named 'X' on this case"). NEVER answer from a different row that merely looks similar, and never name a person/date from an unrelated record — that produces a confidently wrong answer about real case data.
+• When searchedFor is present, <section>Total is the number of MATCHES, not the section size — sectionSize holds the real total. Say "1 of 90 documents matches" rather than reporting the match count as the section total.
+• Do NOT set searchKeyword for "how many..." or "show me all..." questions — those need the whole section.
+
 ━━━ PHASE-2 SINGLE-CASE TOOLS — success:false MEANS THE CASE ITSELF WASN'T FOUND ━━━
 getCaseFullDetail/getCaseTasks/getCaseEvents/getCaseDocuments/getCaseNotes/getCaseActivities/getCaseAccounting all share one failure shape: success: false with an error message (e.g. "Case \"RP003668\" not found") when the case number/ID/name didn't match ANY case. This is DIFFERENT from a successful call that simply found zero rows (e.g. documents: [] on a real case) — never blur the two together.
 • success: false (and NOT ambiguous: true) → the CASE ITSELF was not found. Relay that plainly ("I couldn't find a case matching \"RP003668\" — please double-check the case number") using the error message. NEVER phrase this as "no documents/tasks/notes/etc. on file" — that wording implies the case exists and is simply empty, which is a different (and false) claim when the case wasn't found at all.
@@ -1545,8 +1552,16 @@ searchType values:
       const sectionCount = sectionKey
         ? (typeof sectionTotal === 'number' ? sectionTotal : (sectionOutput![sectionKey] as unknown[]).length)
         : null;
+      // When the tool ran a keyword search, <section>Total counts MATCHES, not
+      // the section — say so explicitly, otherwise the model reports "1
+      // document on this case" for a case with 90 (see searchKeyword in
+      // lib/tools/impl/caseDetail.ts).
+      const searchedFor = sectionOutput?.searchedFor;
+      const sectionSize = sectionOutput?.sectionSize;
       const sectionCountDirective = (sectionKey && sectionCount !== null)
-        ? `${systemPrompt}\n\n━━━ EXACT ${sectionKey.toUpperCase()} COUNT ━━━\nThe tool result you JUST received contains EXACTLY ${sectionCount} ${sectionKey}. If the user asked how many, state ${sectionCount} and no other number. Never estimate, round, or re-count the list yourself — ${sectionCount} is the verified total, even if you only itemize some of them in your reply.`
+        ? (typeof searchedFor === 'string'
+          ? `${systemPrompt}\n\n━━━ ${sectionKey.toUpperCase()} SEARCH RESULT ━━━\nThis result is a SEARCH of the whole ${sectionKey} section for "${searchedFor}" — not the section itself. It matched EXACTLY ${sectionCount} row(s)${typeof sectionSize === 'number' ? ` out of ${sectionSize} ${sectionKey} on the case` : ''}.${sectionCount === 0 ? ` Nothing matched, so tell the user plainly that no ${sectionKey.replace(/s$/, '')} matching "${searchedFor}" exists on this case. Do NOT answer from a different row, and do NOT name a person or date taken from an unrelated record.` : ` Answer ONLY from these ${sectionCount} matching row(s).`} Never present ${sectionCount} as the total number of ${sectionKey} on the case.`
+          : `${systemPrompt}\n\n━━━ EXACT ${sectionKey.toUpperCase()} COUNT ━━━\nThe tool result you JUST received contains EXACTLY ${sectionCount} ${sectionKey}. If the user asked how many, state ${sectionCount} and no other number. Never estimate, round, or re-count the list yourself — ${sectionCount} is the verified total, even if you only itemize some of them in your reply.`)
         : null;
 
       // After the tool ran: for an explicit "how many" question, hand the model

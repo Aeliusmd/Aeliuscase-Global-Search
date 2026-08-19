@@ -5,6 +5,7 @@ vi.mock('@/lib/caseFullDetail', () => ({
 }));
 
 import { fetchCaseFullDetail } from '@/lib/caseFullDetail';
+import { SECTION_SAMPLE_CAP } from '@/lib/tools/impl/caseDetail';
 import { makeGetCaseDocumentsTool } from '@/lib/tools/impl/caseDetail';
 
 const deps = { apiBaseUrl: 'http://localhost', jwtToken: 'test' };
@@ -117,5 +118,61 @@ describe('getCaseDocuments tool', () => {
     expect((await run({ caseNumber: 'RP003583', answerScope: 'single_fact' })).narrow).toBe(true);
     expect((await run({ caseNumber: 'RP003583', answerScope: 'full_list' })).narrow).toBe(false);
     expect((await run({ caseNumber: 'RP003583' })).narrow).toBe(false);
+  });
+});
+
+// Live bug fixed 2026-08-19 — see keywordMatches in lib/tools/impl/caseDetail.ts.
+// Only the newest SECTION_SAMPLE_CAP rows reach the model, so a record further
+// down the list was invisible and the model answered from a row it COULD see:
+// "who uploaded the Verification form" returned "Suvi Dison" when the real
+// uploader was Bhagya Adhikara (that document sits at position 30 of 90).
+describe('searchKeyword — searches the whole section, not just the newest rows', () => {
+  const docs = [
+    ...Array.from({ length: 30 }, (_, i) => ({ id: i, name: `Filler ${i}`, uploadedBy: 'Suvi dison' })),
+    { id: 99, name: 'Verification form', uploadedBy: 'Bhagya Adhikara' },
+    ...Array.from({ length: 59 }, (_, i) => ({ id: 200 + i, name: `Tail ${i}`, uploadedBy: 'Suvi dison' })),
+  ];
+  const mockDocs = () => vi.mocked(fetchCaseFullDetail).mockResolvedValue({
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    success: true, data: { caseNumber: 'AE-00224', caseName: 'x', documents: docs } as any,
+  });
+
+  it('finds a record that sits past the sample cap', async () => {
+    mockDocs();
+    const out = await run({ caseNumber: 'AE-00224', searchKeyword: 'Verification form' });
+
+    expect(out.documents).toHaveLength(1);
+    expect(out.documents[0].uploadedBy).toBe('Bhagya Adhikara');
+    expect(out.documentsTotal).toBe(1);
+    expect(out.searchMatched).toBe(true);
+    expect(out.searchedFor).toBe('Verification form');
+    // The match count must never be mistaken for the section total.
+    expect(out.sectionSize).toBe(90);
+  });
+
+  it('reports a miss instead of returning a near-miss row', async () => {
+    mockDocs();
+    const out = await run({ caseNumber: 'AE-00224', searchKeyword: 'Medical Records' });
+
+    expect(out.documents).toEqual([]);
+    expect(out.searchMatched).toBe(false);
+    expect(out.sectionSize).toBe(90);
+  });
+
+  it('returns the newest rows and the real total when no keyword is given', async () => {
+    mockDocs();
+    const out = await run({ caseNumber: 'AE-00224' });
+
+    expect(out.documents).toHaveLength(SECTION_SAMPLE_CAP);
+    expect(out.documentsTotal).toBe(90);
+    expect(out.searchedFor).toBeUndefined();
+    expect(out.searchMatched).toBeUndefined();
+  });
+
+  it('matches case-insensitively and tolerates extra whitespace', async () => {
+    mockDocs();
+    const out = await run({ caseNumber: 'AE-00224', searchKeyword: '  verification   FORM ' });
+    expect(out.documents).toHaveLength(1);
+    expect(out.searchMatched).toBe(true);
   });
 });
