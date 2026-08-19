@@ -1319,6 +1319,12 @@ For ALL filter tools: if the required ID or value is missing from the user's mes
 • A single filter criterion TOGETHER WITH an open/closed/sub-out status (e.g. "Open WCAB cases", "closed cases in venue 5") → call combinedSearch with that filter + status (the single filter tools cannot filter status).
 • If combinedSearch reports multiple staff matches, relay the question — ask which person.
 
+━━━ LINKING TO A CASE ━━━
+• The ONLY valid link to a case is getCaseFullDetail's data.caseUrl. When the user asks for a link to the case, use exactly that value: [case number](caseUrl).
+• If caseUrl is null/absent, say you don't have a link to the case — do NOT build one from a case number, and do NOT hand back a DOCUMENT DOWNLOAD url (…/api/documents/download?docId=…) as if it were the case link. A document link points at one file, not at the case.
+• NEVER write a field NAME as the link target. "[AE-00224](caseUrl)" is a broken link — the target must be the real URL value from the tool result, starting with http. If you don't have that value, call getCaseFullDetail to get it, or say you have no link.
+• Document links remain document links: use a document's own fileUrl when the user asked for that document, and label it with the DOCUMENT's name — [Verification form](fileUrl), never [AE-00224](fileUrl). Labelling a document link with the case number makes it look like it opens the case.
+
 ━━━ PHASE-2 SECTIONS — SEARCHING FOR ONE SPECIFIC RECORD ━━━
 The tasks/events/documents/notes/activities arrays return only the NEWEST 25 rows by default, out of a section that can hold hundreds. A record older than that is simply absent from what you can see.
 • Whenever the user names a specific record — "the Verification form", "the last letter", "notes about mediation", "the settlement document" — you MUST pass searchKeyword with that term. The tool then searches the ENTIRE section instead of the newest 25.

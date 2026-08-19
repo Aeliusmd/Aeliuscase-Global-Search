@@ -319,7 +319,13 @@ const HTML_ENTITIES: Record<string, string> = {
 function stripHtml(v: unknown): string | null {
   const s = str(v);
   if (!s) return null;
-  const noTags = s.replace(/<[^>]*>/g, '');
+  // Some activity descriptions carry an inline handler whose ARGUMENTS sit
+  // outside the tag, e.g. `<a onclick=window.getAccessUrl(780,6)>Letter</a>`
+  // renders (unhelpfully) as "(780,6)Letter" once the tags go, and the model
+  // then emitted it as a markdown link target — "[here](780,6)", a dead link
+  // (live 2026-08-19). Drop the orphaned call arguments with the tag.
+  const noHandlers = s.replace(/<a\b[^>]*?\b(?:on\w+\s*=\s*)?[\w.]*\(\s*[\d\s,]*\)[^>]*>/gi, '<a>');
+  const noTags = noHandlers.replace(/<[^>]*>/g, '');
   const decoded = noTags.replace(/&nbsp;|&amp;|&lt;|&gt;|&quot;|&#39;|&apos;/g, (m) => HTML_ENTITIES[m]);
   const stripped = decoded.trim();
   return stripped === '' ? null : stripped;
@@ -529,7 +535,11 @@ function mapActivities(topLevel: Raw): CaseActivitySummary[] {
     if (a?.isDeleted === true) continue;
     out.push({
       id: num(a?.id),
-      description: str(a?.description),
+      // stripHtml, not str — activity descriptions carry real markup
+      // (`<b>…</b>`, `<a onclick=…>`), which reached the model verbatim and
+      // came back out as a dead markdown link (live 2026-08-19). Every other
+      // rich-text field in this mapper is already stripped.
+      description: stripHtml(a?.description),
       type: str(a?.activityTag) ?? str(a?.type),
       performedBy: str(a?.performedBy?.name) ?? str(a?.createdBy),
       timestamp: str(a?.timestamp) ?? str(a?.createdDateTime),
@@ -596,9 +606,28 @@ function mapJetFileSubmissionDate(topLevel: Raw): string | null {
   return successfulDates[0] ?? null;
 }
 
+/**
+ * The dashboard URL for this case — the same link Phase-1's result cards
+ * already build (see components/home/CaseCard.tsx). Phase-2 answers had no
+ * case link of their own, so when a user asked for "a link to the case" the
+ * model fabricated one, handing back a DOCUMENT DOWNLOAD url dressed up as the
+ * case link (live 2026-08-19). Supplying the real one removes the temptation.
+ *
+ * Returns null when the app base URL isn't configured or the case has no id,
+ * so the prompt can tell the model to say it has no link rather than invent
+ * one from a half-built string.
+ */
+function buildCaseUrl(caseId: number | null): string | null {
+  const base = process.env.NEXT_PUBLIC_APP_BASE_URL?.replace(/\/+$/, '');
+  if (!base || caseId === null) return null;
+  return `${base}/dashboard/case-overview/${caseId}`;
+}
+
 export function mapCaseFullDetail(topLevel: Raw, appOrigin?: string): CaseFullDetailData {
   const c: Raw = topLevel?.case ?? {};
   return {
+    caseId: num(c.id),
+    caseUrl: buildCaseUrl(num(c.id)),
     caseNumber: str(c.caseNumber),
     fileNumber: str(c.fileNumber),
     caseName: str(c.caseName) ?? str(c.displayNameForCaseSearch),

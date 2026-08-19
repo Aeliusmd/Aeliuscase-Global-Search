@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { EventEmitter } from 'node:events';
 import { mapCaseFullDetail, fetchCaseFullDetail } from '@/lib/caseFullDetail';
 
@@ -980,5 +980,50 @@ describe('fetchCaseFullDetail — resolves a fileNumber-shaped identifier in whi
 
     expect(capturedBodies).toHaveLength(1);
     expect(result.success).toBe(false);
+  });
+});
+
+// Live bugs fixed 2026-08-19 — both surfaced from the same "give me a link to
+// the case" question on AE-00224.
+describe('case link and inline-handler stripping', () => {
+  const OLD = process.env.NEXT_PUBLIC_APP_BASE_URL;
+  afterEach(() => { process.env.NEXT_PUBLIC_APP_BASE_URL = OLD; });
+
+  it('builds the same dashboard URL Phase-1 result cards link to', () => {
+    process.env.NEXT_PUBLIC_APP_BASE_URL = 'https://uat.aeliuscase.com';
+    const out = mapCaseFullDetail({ case: { id: 224, caseNumber: 'AE-00224' } });
+    expect(out.caseId).toBe(224);
+    expect(out.caseUrl).toBe('https://uat.aeliuscase.com/dashboard/case-overview/224');
+  });
+
+  it('tolerates a trailing slash on the configured base URL', () => {
+    process.env.NEXT_PUBLIC_APP_BASE_URL = 'https://uat.aeliuscase.com/';
+    expect(mapCaseFullDetail({ case: { id: 7 } }).caseUrl)
+      .toBe('https://uat.aeliuscase.com/dashboard/case-overview/7');
+  });
+
+  // null (rather than a half-built string) is what lets the prompt say "no
+  // link available" instead of the model inventing one.
+  it('returns null when the base URL is unset or the case has no id', () => {
+    delete process.env.NEXT_PUBLIC_APP_BASE_URL;
+    expect(mapCaseFullDetail({ case: { id: 224 } }).caseUrl).toBeNull();
+    process.env.NEXT_PUBLIC_APP_BASE_URL = 'https://uat.aeliuscase.com';
+    expect(mapCaseFullDetail({ case: {} }).caseUrl).toBeNull();
+  });
+
+  // `<a onclick=window.getAccessUrl(780,6)>Letter</a>` used to strip down to
+  // "(780,6)Letter", which the model then emitted as "[here](780,6)".
+  it('drops orphaned inline-handler arguments from activity descriptions', () => {
+    const out = mapCaseFullDetail({
+      case: { id: 1 },
+      activities: [{
+        id: 9,
+        description: 'Letter: [<a onclick=window.getAccessUrl(780,6)>6002 Proof of Service</a>] filled by Suvi dison.',
+      }],
+    });
+    const description = out.activities[0].description ?? '';
+    expect(description).toContain('6002 Proof of Service');
+    expect(description).not.toContain('780,6');
+    expect(description).not.toContain('getAccessUrl');
   });
 });

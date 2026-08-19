@@ -180,6 +180,14 @@ export interface CaseAccountingSummary {
 }
 
 export interface CaseFullDetailData {
+  /** Internal numeric case id — the key the dashboard URL is built from. */
+  caseId: number | null;
+  /**
+   * Dashboard URL for this case, the same one Phase-1's result cards link to.
+   * null when NEXT_PUBLIC_APP_BASE_URL isn't set or the case has no id — in
+   * which case the answer must say there is no link, never improvise one.
+   */
+  caseUrl: string | null;
   caseNumber: string | null;
   fileNumber: string | null;
   caseName: string | null;

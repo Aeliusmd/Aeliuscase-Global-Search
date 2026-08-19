@@ -34,6 +34,12 @@ import type { DomainContext, DomainModule, DomainToolSelection } from './types';
  * mapCaseFullDetail already maps the real applicant, so this just needs the
  * word to reach this domain.
  *
+ * `link` added 2026-08-19: "give me a link to case AE00224" carries no other
+ * topic word, so it fell through to casesDomain and ran a plain searchCases —
+ * which has no caseUrl, and the model answered with the literal placeholder
+ * "[AE-00224](caseUrl)". getCaseFullDetail is the only tool that returns the
+ * real dashboard URL (see buildCaseUrl in lib/caseFullDetail.ts).
+ *
  * Note: carrier/employer CONTACT-DETAIL questions ("what is the insurance
  * carrier's email address") also resolve to getCaseFullDetail, but they are
  * routed by contactDetailRef in app/api/chat/route.ts rather than by this
@@ -63,7 +69,7 @@ export const caseDetailDomain: DomainModule = {
   match: new RegExp(
     String.raw`(?=.*\b(?:venue|injur\w*|body\s*part|sol|statute\s*of\s*limitations|expir\w*|doi|date\s*of\s*injury` +
       String.raw`|adj\s*(?:number|#|no)?|demographics?|applicant|defendant|jet\s*file|full\s*detail|everything\s*on\s*case` +
-      String.raw`|attorney|paralegal|coordinator)\b)` +
+      String.raw`|attorney|paralegal|coordinator|links?)\b)` +
       String.raw`(?=.*(?:\bcase\b|\b[A-Z]{1,4}\d{3,}\b|\bvs\.?\b|\bv\.\s))`,
     'i',
   ),
