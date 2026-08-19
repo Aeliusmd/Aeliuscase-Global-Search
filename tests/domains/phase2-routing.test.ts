@@ -507,3 +507,44 @@ describe('casesDomain defers when another domain requires exclusive tool control
     expect(sel.activeTools.length).toBeGreaterThan(0);
   });
 });
+
+// Live bug fixed 2026-08-19 — see isGuideQuestion in lib/domains/index.ts.
+// "How do I upload a document to a case?" matched documentsDomain (topic word
+// + the word "case"), which forces getCaseDocuments; with no case to look up
+// the model replied "I can only help with AeliusCase case searches and User
+// Guide questions" — refusing a question the User Guide answers.
+describe('User Guide how-to questions do not force a Phase-2 tool', () => {
+  const guideQuestions = [
+    'How do I upload a document to a case?',
+    'How do I add a note to a case?',
+    'How do I create a task on a case?',
+    'How do I schedule a hearing on a case?',
+    'How do I assign an attorney to a case?',
+    'How can I see the activities on a case?',
+    'How to add a document to a case',
+    'Where do I find the venue for a case?',
+  ];
+
+  for (const q of guideQuestions) {
+    it(`does not force a tool for "${q}"`, () => {
+      const { domains, sel } = route(q);
+      expect(domains.map((d) => d.key)).toEqual(['cases']);
+      expect(sel.requireTool).toBe(false);
+    });
+  }
+
+  // A named case means it IS a data question, however it is phrased.
+  const dataQuestions = [
+    'How many documents are on case AE00224?',
+    'What is the venue on case RP003583?',
+    'How do I find the attorney on case RP2476?',
+    'who uploaded the settlement document on case AE00224',
+  ];
+
+  for (const q of dataQuestions) {
+    it(`still routes "${q}" to a case tool`, () => {
+      const { sel } = route(q);
+      expect(sel.activeTools.length).toBeGreaterThan(0);
+    });
+  }
+});

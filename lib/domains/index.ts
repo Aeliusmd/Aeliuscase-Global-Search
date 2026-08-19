@@ -29,7 +29,37 @@ export const DOMAINS: DomainModule[] = [
   accountingDomain,
 ];
 
+/**
+ * A "how do I …" User Guide question rather than a request for case data.
+ *
+ * Live bug fixed 2026-08-19: every Phase-2 domain matches on a topic word plus
+ * the word "case", which a guide question contains just as naturally as a data
+ * question does — "How do I upload a document to a case?" matches
+ * documentsDomain, which then forces getCaseDocuments (requireTool). With no
+ * case to look up the call is useless, and the model answered
+ * "I can only help with AeliusCase case searches and User Guide questions" —
+ * refusing a question the User Guide answers. It was inconsistent too: the
+ * same shape asking about tasks forced getCaseTasks but recovered, while notes
+ * and events happened not to force anything and answered correctly.
+ *
+ * A concrete case reference (case number, "X vs Y") means it IS about one
+ * case whatever the phrasing, so those are deliberately excluded — this must
+ * never catch "what is the venue on case RP2010". Only the unambiguous
+ * instructional shapes are matched, which is why "what is a venue" is left
+ * alone: telling it apart from "what is the venue on <case>" is not worth the
+ * risk, and that phrasing already answers correctly.
+ */
+const HOW_TO_RE = /\bhow\s+(?:do|can|could|would|should)\s+(?:i|we|you|one)\b|\bhow\s+to\b|\bwhere\s+(?:do|can)\s+(?:i|we)\b|\bexplain\s+how\b/i;
+const CONCRETE_CASE_REF_RE = /\b[A-Za-z]{1,4}\d{2,}\b|\bvs\.?\b|\bv\.\s/i;
+
+export function isGuideQuestion(message: string): boolean {
+  return HOW_TO_RE.test(message) && !CONCRETE_CASE_REF_RE.test(message);
+}
+
 function regexHits(message: string): DomainModule[] {
+  // A guide question keeps only the Cases fallback, whose tool selection never
+  // forces a call — so the model is free to answer from the User Guide.
+  if (isGuideQuestion(message)) return [casesDomain];
   return DOMAINS.filter((d) => d.match.test(message));
 }
 
@@ -72,6 +102,12 @@ export function detectDomains(message: string): DomainModule[] {
  */
 export async function resolveDomains(message: string): Promise<DomainModule[]> {
   const hits = regexHits(message);
+
+  // A guide question must not have a Phase-2 domain merged back in by the
+  // classifier — "how do I upload a document" is about the FEATURE, and any
+  // domain that fires here forces a pointless single-case lookup (see
+  // isGuideQuestion). Skipping the call also saves a round-trip.
+  if (isGuideQuestion(message)) return hits;
 
   const keys = await classifyDomainsLLM(message, DOMAINS).catch((err) => {
     console.error('[domains] resolveDomains: classifyDomainsLLM rejected unexpectedly:', err);
@@ -127,6 +163,17 @@ export function selectToolsForDomains(
     forcedCombined = forcedCombined || sel.forcedCombined;
     requireTool = requireTool || sel.requireTool;
   }
+
+  // A guide question keeps the tool MENU (the model may still choose to search
+  // if it turns out to want data) but must never be FORCED into a call — the
+  // answer lives in the User Guide excerpts, not in a case lookup. casesDomain
+  // reaches here even for "how do I assign an attorney to a case", because
+  // intentRouter reads "attorney"/"venue" as filter intents and those set
+  // requireTool on their own. See isGuideQuestion.
+  if (isGuideQuestion(ctx.message)) {
+    return { tools, activeTools: Object.keys(tools), forcedCombined: false, requireTool: false };
+  }
+
   return { tools, activeTools: Object.keys(tools), forcedCombined, requireTool };
 }
 
