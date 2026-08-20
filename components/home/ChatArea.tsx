@@ -101,9 +101,18 @@ export default function ChatArea({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Persist messages to DB after every AI reply completes
+  // Persist messages to DB after every AI reply completes.
+  //
+  // Gated on the user having actually sent something in this chat. Opening an
+  // old conversation restores its messages, which lands here with status
+  // 'ready' and a non-empty list — so merely CLICKING a chat used to PATCH it
+  // (bumping updatedAt server-side) and bump it to the top of Recent Searches
+  // showing "just now", without a single word being added. Reported 2026-08-20.
+  const hasUserSentRef = useRef(false);
+
   useEffect(() => {
     if (!hydrated || messages.length === 0 || status !== 'ready') return;
+    if (!hasUserSentRef.current) return;
     fetch(`/api/conversations/${conversationId}`, {
       method: 'PATCH',
       headers: {
@@ -168,6 +177,9 @@ export default function ChatArea({
 
   const handleSend = useCallback(
     (text: string) => {
+      // From here on this chat has real activity, so completed exchanges are
+      // saved and it legitimately moves to the top — see hasUserSentRef.
+      hasUserSentRef.current = true;
       sendMessage({ text });
       if (isNew && onFirstMessage) {
         const title = text.length > 40 ? text.slice(0, 40) + '...' : text;
