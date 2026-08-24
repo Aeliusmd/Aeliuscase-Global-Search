@@ -160,6 +160,11 @@ describe('fetchCaseParties — caseName resolution', () => {
     expect(result.parties).toHaveLength(1);
   });
 
+  // The query here is a bare applicant name, which genuinely cannot pick
+  // between the two. Note it used to be the full "Smith vs Acme" — since
+  // 2026-08-24 that resolves instead of asking, because one candidate carries
+  // exactly that name and an exact match beats a partial one (see
+  // narrowByFullName in lib/caseParties.ts).
   it('returns ambiguous:true with candidates when caseName matches more than one case', async () => {
     mockFetch([
       { id: 1, caseNumber: 'RP0001', caseName: 'Smith vs Acme', caseType: 'WC', caseStatus: 'Open' },
@@ -169,7 +174,7 @@ describe('fetchCaseParties — caseName resolution', () => {
     const result = await fetchCaseParties({
       apiBaseUrl: 'https://uatapi.aeliuscase.com',
       jwtToken: 'test-token',
-      caseName: 'Smith vs Acme',
+      caseName: 'Smith',
     });
 
     expect(result.success).toBe(false);
@@ -258,5 +263,80 @@ describe('fetchCaseParties — partyGroups', () => {
     expect(result.partyGroups).toEqual([
       { partyType: 'Unknown', count: 2, names: ['Someone'], truncated: false },
     ]);
+  });
+});
+
+// Live bug fixed 2026-08-24 (case AE0032B). Resolving a case NAME searches the
+// full "[Applicant] vs [Company]" string first, then retries with just the
+// applicant part when that finds nothing — but the retry threw away the half
+// that disambiguates. "Thomas Smith vs Matrix" fell back to "Thomas Smith",
+// matched three cases, and a perfectly specific question was answered with
+// "which one did you mean?".
+describe('resolving a case by name narrows on the full name', () => {
+  beforeEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  /** Empty for the full-name search, then the applicant-part matches. */
+  function stubSearchThenParties(applicantMatches: Array<Record<string, unknown>>) {
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (String(url).includes('GetCaseListCombined')) {
+        const body = JSON.parse(String(init?.body ?? '{}')) as { searchText?: string };
+        const cases = /vs/i.test(body.searchText ?? '') ? [] : applicantMatches;
+        return { ok: true, status: 200, json: async () => ({ data: { cases } }) };
+      }
+      return { ok: true, status: 200, json: async () => ({ data: [{ partyType: 'Defense Attorney', partyName: 'ASDFE' }] }) };
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    return fetchMock;
+  }
+
+  const THREE = [
+    { id: 32, caseNumber: 'AE0032B', caseName: 'Thomas Smith vs Matrix' },
+    { id: 152, caseNumber: 'AE00152', caseName: 'Thomas Smith vs YUGANDD' },
+    { id: 553, caseNumber: 'CV00553', caseName: 'Thomas Smith' },
+  ];
+
+  it('picks the one case the full name actually names', async () => {
+    const fetchMock = stubSearchThenParties(THREE);
+
+    const result = await fetchCaseParties({
+      apiBaseUrl: 'https://uatapi.aeliuscase.com', jwtToken: 't',
+      caseName: 'Thomas Smith vs Matrix',
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.ambiguous).toBeUndefined();
+    // Resolved to case 32, so the parties call used that id.
+    expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith('/32'))).toBe(true);
+  });
+
+  it('tolerates a suffix the user omitted', async () => {
+    stubSearchThenParties([
+      { id: 32, caseNumber: 'AE0032B', caseName: 'Thomas Smith vs Matrix Holdings LLC' },
+      { id: 152, caseNumber: 'AE00152', caseName: 'Thomas Smith vs YUGANDD' },
+    ]);
+
+    const result = await fetchCaseParties({
+      apiBaseUrl: 'https://uatapi.aeliuscase.com', jwtToken: 't',
+      caseName: 'Thomas Smith vs Matrix',
+    });
+    expect(result.success).toBe(true);
+    expect(result.ambiguous).toBeUndefined();
+  });
+
+  it('still reports ambiguity when the name genuinely matches several', async () => {
+    stubSearchThenParties([
+      { id: 1, caseNumber: 'A1', caseName: 'Thomas Smith vs Matrix' },
+      { id: 2, caseNumber: 'A2', caseName: 'Thomas Smith vs Matrix' },
+    ]);
+
+    const result = await fetchCaseParties({
+      apiBaseUrl: 'https://uatapi.aeliuscase.com', jwtToken: 't',
+      caseName: 'Thomas Smith vs Matrix',
+    });
+    expect(result.success).toBe(false);
+    expect(result.ambiguous).toBe(true);
+    expect(result.candidates).toHaveLength(2);
   });
 });

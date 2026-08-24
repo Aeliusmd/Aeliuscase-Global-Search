@@ -190,7 +190,8 @@ function formatCarriedFilters(values: Record<string, unknown>): string {
  * and were verified to answer correctly.
  */
 const PARTY_ANSWERABLE_FIELDS =
-  String.raw`parties|part(?:y|ies)|contacts?|venue|insurance\s+carrier|carrier|defendant|employer|adjuster`;
+  String.raw`(?:defense|defence|applicant|prior|referred\s+out|uef|opposing)\s+attorney`
+  + String.raw`|parties|part(?:y|ies)|contacts?|venue|insurance\s+carrier|carrier|defendant|employer|adjuster`;
 
 /**
  * A question asking for a CONTACT DETAIL (email / address / phone / fax) about
@@ -1332,6 +1333,7 @@ ${guideSection}
   Examples: "show parties for RP00001", "who is on case 12345", "get contacts for RP00056", "what are the parties in the Smith vs Acme case".
   The parties result also contains the case's VENUE, INSURANCE CARRIER, DEFENDANT and EMPLOYER — so "who is the insurance carrier for RP2476", "what's the venue on RP00001", "who is the defendant on [case]" all → call getCaseParties for that case, then read the answer from the parties list. These are NOT off-topic and are NOT a combinedSearch — never call combinedSearch for a single-case party question.
   ‼️ The parties result does NOT contain the case's APPLICANT, ATTORNEY, PARALEGAL or COORDINATOR. There is no "Applicant" or "Coordinator" row in it, and its "Attorney" row is a PARTY's own attorney, not the case's assigned attorney. For those four, call getCaseFullDetail instead — it maps them explicitly. NEVER answer "who is the applicant / attorney / paralegal / coordinator" from the parties list by picking the nearest-looking row (e.g. reading "Plaintiff" as the applicant, or "Applicant Attorney" as the case attorney) — that produces a confidently wrong name.
+  ‼️ ATTORNEY ROLES ARE TWO DIFFERENT THINGS. A BARE "the attorney on case X" means the firm's assigned attorney → getCaseFullDetail. A QUALIFIED role — "DEFENSE attorney", "APPLICANT attorney", "PRIOR attorney", "REFERRED OUT attorney", "UEF attorney" — is a PARTY on the case → getCaseParties, and the answer is the party row whose partyType matches that exact role. Never answer a qualified role from getCaseFullDetail's own attorney field: that is the firm's own attorney and naming it as the defense attorney is a confidently wrong answer. If the parties list has no row for the role asked about, say so.
   If the result has ambiguous:true, the caseName matched more than one case — list the candidates and ask the user which one they mean; do not guess.
   REQUIRED: a case number (e.g. RP00001), case name, or numeric case ID MUST appear in the user's message. If absent → ask first, never call the tool.
 

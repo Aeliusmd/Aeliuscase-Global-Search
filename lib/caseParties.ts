@@ -93,6 +93,39 @@ const VS_SEPARATOR_RE = /\s+(?:vs\.?|v\.)\s+/i;
  * case, so this mirrors GetCaseFullDetail's own ambiguous/candidates
  * handling (lib/caseFullDetail.ts) rather than silently picking a row.
  */
+const normalizeName = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+
+/**
+ * Pick the candidates that actually match the FULL "[Applicant] vs [Company]"
+ * name the user gave.
+ *
+ * The applicant-part retry below is what makes a name resolvable at all, but it
+ * throws away the half that disambiguates: searching "Thomas Smith" returns
+ * "Thomas Smith vs Matrix", "Thomas Smith vs YUGANDD" and "Thomas Smith", so a
+ * perfectly specific question was answered with "which one did you mean?"
+ * (live 2026-08-24). Comparing the full name against each candidate's own
+ * caseName picks the one the user actually named; a genuinely ambiguous name
+ * still returns everything.
+ */
+function narrowByFullName(cases: CaseSearchRow[], caseName: string): CaseSearchRow[] {
+  const target = normalizeName(caseName);
+  if (!target) return cases;
+
+  const exact = cases.filter((c) => typeof c.caseName === 'string' && normalizeName(c.caseName) === target);
+  if (exact.length > 0) return exact;
+
+  // The stored name often carries a suffix the user omits ("... LLC"), so fall
+  // back to candidates containing every word of what they typed.
+  const words = target.split(' ').filter((w) => w.length > 1);
+  if (words.length === 0) return cases;
+  const contains = cases.filter((c) => {
+    if (typeof c.caseName !== 'string') return false;
+    const haystack = normalizeName(c.caseName);
+    return words.every((w) => haystack.includes(w));
+  });
+  return contains.length > 0 ? contains : cases;
+}
+
 async function resolveCaseIdByName(
   apiBaseUrl: string, jwtToken: string, caseName: string,
 ): Promise<CaseNameResolution> {
@@ -107,6 +140,7 @@ async function resolveCaseIdByName(
   }
 
   if (cases.length === 0) return { kind: 'not-found' };
+  if (cases.length > 1) cases = narrowByFullName(cases, caseName);
 
   if (cases.length === 1) {
     const id = cases[0]?.id;

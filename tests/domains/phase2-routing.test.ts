@@ -548,3 +548,43 @@ describe('User Guide how-to questions do not force a Phase-2 tool', () => {
     });
   }
 });
+
+// Live bug fixed 2026-08-24 on case AE0032B. AeliusCase has two attorney
+// taxonomies: case-level staff (GetCaseFullDetail: attorney, supervisor
+// attorney, paralegal, coordinator) and party roles (the parties list:
+// Defense/Applicant/Prior/Referred Out/UEF Attorney). "Who is the defense
+// attorney for Thomas Smith vs Matrix?" matched caseDetailDomain on the bare
+// word "attorney", took the turn exclusively, and was answered from
+// case.caseAttorneyName — "Phoebe Peterson", the firm's own attorney, reported
+// as the defense attorney. The real Defense Attorney party row says "ASDFE".
+describe('qualified attorney roles belong to the parties list, not case detail', () => {
+  const qualified = [
+    'who is the defense attorney for Thomas Smith vs Matrix case?',
+    'who is the defense attorney on case AE0032B',
+    'who is the applicant attorney on case AE0032B',
+    'who is the prior attorney for the Thomas Smith vs Matrix case',
+    'who is the UEF attorney on case AE0032B',
+    'who is the referred out attorney on case AE0032B',
+  ];
+
+  for (const q of qualified) {
+    it(`does NOT force getCaseFullDetail for "${q}"`, () => {
+      const { domains, sel } = route(q);
+      expect(domains.some((d) => d.key === 'caseDetail')).toBe(false);
+      expect(sel.activeTools).toContain('getCaseParties');
+    });
+  }
+
+  // A bare "attorney" still means the firm's assigned attorney.
+  const bare = [
+    'who is the attorney on case RP2476',
+    'who is the attorney for Elgin Perdomo vs Allied Universal',
+  ];
+
+  for (const q of bare) {
+    it(`still routes "${q}" to getCaseFullDetail`, () => {
+      const { sel } = route(q);
+      expect(sel.activeTools).toContain('getCaseFullDetail');
+    });
+  }
+});
