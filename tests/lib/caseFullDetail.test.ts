@@ -1027,3 +1027,58 @@ describe('case link and inline-handler stripping', () => {
     expect(description).not.toContain('getAccessUrl');
   });
 });
+
+// Live gap closed 2026-08-25 (case AE0032B). "Who is the defense attorney"
+// could only name the firm, "ASDFE", because the standalone parties endpoint
+// returns just partyType/partyName/docs. The contact PERSON the dashboard shows
+// — "heheh fsdfsaf" — is in GetCaseFullDetail's own nested case.parties[],
+// under the defAtty* prefix.
+describe('contacts — party roles with their contact person', () => {
+  const PARTIES = [
+    {
+      partyTypeName: 'Defense Attorney', company: 'ASDFE',
+      defAttyFirstName: 'heheh', defAttyLastName: 'fsdfsaf',
+      defAttyPhone: '(111)-111-1111', defAttyEmail: null,
+      phone: '(222)-222-2222', email: 'defen@mail.com',
+      // Raw rows also carry these; they must never reach the output.
+      defendantSsn: '543-53-4535', defendantDob: '1985-11-11', dlNumber: 'D123',
+    },
+    { partyTypeName: 'Insurance Carrier', company: 'TRAVELERS', firstName: 'Jane', lastName: 'Roe', phone: '(800)-1' },
+    { partyTypeName: 'Venue', company: null, firstName: null, lastName: null },
+  ];
+
+  it('maps the person and the firm for a qualified attorney role', () => {
+    const out = mapCaseFullDetail({ case: { id: 32, parties: PARTIES } });
+    const def = out.contacts.find((c) => c.partyType === 'Defense Attorney');
+
+    expect(def).toBeDefined();
+    expect(def?.contactName).toBe('heheh fsdfsaf');
+    expect(def?.company).toBe('ASDFE');
+    // The defAtty* phone wins over the firm's switchboard number.
+    expect(def?.phone).toBe('(111)-111-1111');
+    // defAttyEmail is null, so it falls back to the firm address.
+    expect(def?.email).toBe('defen@mail.com');
+  });
+
+  it('uses the generic firstName/lastName for non-defence roles', () => {
+    const out = mapCaseFullDetail({ case: { id: 32, parties: PARTIES } });
+    expect(out.contacts.find((c) => c.partyType === 'Insurance Carrier')?.contactName).toBe('Jane Roe');
+  });
+
+  it('drops placeholder rows carrying neither a person nor a firm', () => {
+    const out = mapCaseFullDetail({ case: { id: 32, parties: PARTIES } });
+    expect(out.contacts.some((c) => c.partyType === 'Venue')).toBe(false);
+  });
+
+  // The raw rows carry 150+ fields including SSN, DOB and driving licence.
+  it('never leaks a raw PII field into a contact', () => {
+    const out = mapCaseFullDetail({ case: { id: 32, parties: PARTIES } });
+    const serialized = JSON.stringify(out.contacts);
+    expect(serialized).not.toContain('543-53-4535');
+    expect(serialized).not.toContain('1985-11-11');
+    expect(serialized).not.toContain('D123');
+    for (const c of out.contacts) {
+      expect(Object.keys(c).sort()).toEqual(['company', 'contactName', 'email', 'partyType', 'phone']);
+    }
+  });
+});

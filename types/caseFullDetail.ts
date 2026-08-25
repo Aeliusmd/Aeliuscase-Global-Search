@@ -179,6 +179,22 @@ export interface CaseAccountingSummary {
   settlementFees: CaseSettlementFeeSummary[];
 }
 
+/**
+ * A party on the case: the ROLE, the firm, and the contact PERSON at it.
+ * Strictly allowlisted — see mapContacts in lib/caseFullDetail.ts for why the
+ * raw rows must never be spread through.
+ */
+export interface CaseContactSummary {
+  /** e.g. "Defense Attorney", "Applicant Attorney", "Insurance Carrier". */
+  partyType: string;
+  /** The firm/company, e.g. "ASDFE". */
+  company: string | null;
+  /** The person at that firm, e.g. "heheh fsdfsaf". */
+  contactName: string | null;
+  phone: string | null;
+  email: string | null;
+}
+
 export interface CaseFullDetailData {
   /** Internal numeric case id — the key the dashboard URL is built from. */
   caseId: number | null;
@@ -205,6 +221,14 @@ export interface CaseFullDetailData {
   supervisorAttorney: CasePersonSummary | null;
   coordinator: CasePersonSummary | null;
   paralegal: CasePersonSummary | null;
+
+  /**
+   * Every party on the case with its contact person — the ONLY place a
+   * qualified attorney role (Defense/Applicant/Prior/Referred Out/UEF) can be
+   * answered from. Distinct from `attorney` above, which is the firm's own
+   * assigned attorney on the case.
+   */
+  contacts: CaseContactSummary[];
 
   applicant: {
     fullName: string | null;

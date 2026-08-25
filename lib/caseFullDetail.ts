@@ -14,6 +14,7 @@ import type {
   CasePaymentSummary,
   CasePersonSummary,
   CaseSettlementFeeSummary,
+  CaseContactSummary,
   CaseTaskSummary,
 } from '@/types/caseFullDetail';
 import { sanitizeUpstreamError } from '@/lib/caseSearch';
@@ -257,6 +258,54 @@ function findPopulatedParty(parties: Raw[], typeRe: RegExp): Raw | undefined {
   const matches = parties.filter((p: Raw) => typeRe.test(p?.partyTypeName ?? p?.partyType ?? ''));
   const populated = matches.find((p: Raw) => str(p?.company) !== null || str(p?.name) !== null || str(p?.partyName) !== null);
   return populated ?? matches[0];
+}
+
+function joinName(first: unknown, last: unknown): string | null {
+  const parts = [str(first), str(last)].filter((p): p is string => p !== null);
+  return parts.length > 0 ? parts.join(' ') : null;
+}
+
+/**
+ * One slim row per party on the case — the ROLE, the firm, and the contact
+ * PERSON at that firm.
+ *
+ * Live gap closed 2026-08-25. Asked "who is the defense attorney", the best we
+ * could answer was the firm, "ASDFE", because the standalone parties endpoint
+ * (/api/CaseParties/GetAllPartiesWithDocsbyCaseId) returns only partyType,
+ * partyName and docs. The person the dashboard shows next to it — "heheh
+ * fsdfsaf" — is in GetCaseFullDetail's own nested case.parties[] instead,
+ * under defAttyFirstName/defAttyLastName. Same case, different endpoint.
+ *
+ * ‼️ Those nested rows carry 150+ raw fields including defendantSsn,
+ * defendantDob, dlNumber, birthCity and genderId. This is therefore a STRICT
+ * ALLOWLIST of five fields, never a spread — the same discipline (and the same
+ * reason) as the party projection in lib/caseParties.ts, which exists because
+ * a raw spread leaked SSN and DOB to the model in July.
+ *
+ * A "Defense Attorney" row keeps its person under the defAtty* prefix; every
+ * other role uses the generic firstName/lastName, so both are read. Rows with
+ * neither a person nor a firm are placeholders and are dropped.
+ */
+function mapContacts(parties: Raw[]): CaseContactSummary[] {
+  const out: CaseContactSummary[] = [];
+  for (const p of parties) {
+    const partyType = str(p?.partyTypeName) ?? str(p?.partyType);
+    if (!partyType) continue;
+
+    const contactName = joinName(p?.defAttyFirstName, p?.defAttyLastName)
+      ?? joinName(p?.firstName, p?.lastName);
+    const company = str(p?.company) ?? str(p?.partyName);
+    if (!contactName && !company) continue;
+
+    out.push({
+      partyType,
+      company,
+      contactName,
+      phone: str(p?.defAttyPhone) ?? str(p?.phone) ?? str(p?.comPhone),
+      email: email(p?.defAttyEmail) ?? email(p?.attyEmail) ?? email(p?.email),
+    });
+  }
+  return out;
 }
 
 function mapDefendant(caseObj: Raw, topLevel: Raw): CaseFullDetailData['defendant'] {
@@ -643,6 +692,7 @@ export function mapCaseFullDetail(topLevel: Raw, appOrigin?: string): CaseFullDe
     supervisorAttorney: person(c.caseSupervisorAttorneyName, c.caseSupervisorAttorneyNikeName),
     coordinator: person(c.caseCoordinatorName, c.caseCoordinatorNikeName),
     paralegal: person(c.caseParaLegalName, c.caseParaLegalNikeName),
+    contacts: mapContacts(getPartiesArray(c, topLevel)),
 
     applicant: mapApplicant(c, topLevel),
     employer: mapEmployer(c, topLevel),

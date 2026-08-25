@@ -40,22 +40,20 @@ import type { DomainContext, DomainModule, DomainToolSelection } from './types';
  * "[AE-00224](caseUrl)". getCaseFullDetail is the only tool that returns the
  * real dashboard URL (see buildCaseUrl in lib/caseFullDetail.ts).
  *
- * A QUALIFIED attorney role is deliberately excluded by the lookbehind on
- * `attorney` (added 2026-08-24, live on case AE0032B). AeliusCase has two
- * separate attorney taxonomies and the bare word collides with both:
+ * QUALIFIED attorney roles belong here too, as of 2026-08-25. AeliusCase has
+ * two attorney taxonomies:
  *
- *   case-level staff, in GetCaseFullDetail  — attorney, supervisor attorney,
- *                                             paralegal, coordinator
- *   party roles, in the parties list        — Defense Attorney, Applicant
- *                                             Attorney, Prior Attorney,
- *                                             Referred Out Attorney, UEF Attorney
+ *   case-level staff  - attorney, supervisor attorney, paralegal, coordinator
+ *   party roles       - Defense / Applicant / Prior / Referred Out / UEF Attorney
  *
- * "Who is the defense attorney for Thomas Smith vs Matrix?" matched here on
- * the bare "attorney", took the turn exclusively, and got answered from
- * case.caseAttorneyName — "Phoebe Peterson", the firm's own attorney on the
- * case, reported as the defense attorney. The real Defense Attorney party row
- * says "ASDFE". Qualified roles now fall through to the case_parties intent,
- * which exposes getCaseParties; a bare "attorney" still belongs here.
+ * "Who is the defense attorney for Thomas Smith vs Matrix?" once answered
+ * "Phoebe Peterson" - the firm's own attorney - because this domain matched on
+ * the bare "attorney" and that was the only attorney field it had. It was
+ * briefly routed to getCaseParties instead, but that endpoint returns only
+ * partyType/partyName/docs, so the best it could give was the firm ("ASDFE").
+ * GetCaseFullDetail's own nested case.parties[] turned out to carry the contact
+ * PERSON as well, now mapped to `contacts` (see mapContacts), so this domain
+ * answers both taxonomies and the prompt says which field each phrasing reads.
  *
  * Note: carrier/employer CONTACT-DETAIL questions ("what is the insurance
  * carrier's email address") also resolve to getCaseFullDetail, but they are
@@ -82,14 +80,11 @@ import type { DomainContext, DomainModule, DomainToolSelection } from './types';
 export const caseDetailDomain: DomainModule = {
   key: 'caseDetail',
   label: 'Case Detail',
-  llmHint: 'full detail for ONE specific case — venue, injury/body parts, statute of limitations (SOL) / expiry, date of injury (DOI), ADJ number, applicant, defendant, employer/insurance-carrier demographics, or the firm\'s own assigned staff on the case: a BARE "the attorney", the supervisor attorney, paralegal or coordinator. ALSO owns JetFile/EAMS SUBMISSION questions ("when was case X submitted to JetFile") — submitting a case to JetFile is not a document upload, so those belong here and NOT to the documents category. NOT for a QUALIFIED attorney role — "defense attorney", "applicant attorney", "prior attorney", "referred out attorney", "UEF attorney" are PARTIES on the case and belong to the cases/parties category, not here. Especially relevant when the case is referenced by NAME ("X vs Y") rather than case number',
+  llmHint: 'full detail for ONE specific case — venue, injury/body parts, statute of limitations (SOL) / expiry, date of injury (DOI), ADJ number, applicant, defendant, employer/insurance-carrier demographics, or the firm\'s own assigned staff on the case: a BARE "the attorney", the supervisor attorney, paralegal or coordinator. ALSO owns JetFile/EAMS SUBMISSION questions ("when was case X submitted to JetFile") — submitting a case to JetFile is not a document upload, so those belong here and NOT to the documents category. ALSO owns QUALIFIED attorney roles — "defense attorney", "applicant attorney", "prior attorney", "referred out attorney", "UEF attorney" — which are parties on the case and come back in the contacts list. Especially relevant when the case is referenced by NAME ("X vs Y") rather than case number',
   match: new RegExp(
     String.raw`(?=.*\b(?:venue|injur\w*|body\s*part|sol|statute\s*of\s*limitations|expir\w*|doi|date\s*of\s*injury` +
-      // "applicant" alone is a case-detail field, but "applicant ATTORNEY" is a
-      // party role — without this lookahead it matches here regardless of the
-      // lookbehind guarding `attorney` just below.
-      String.raw`|adj\s*(?:number|#|no)?|demographics?|applicant(?!\s+attorney)|defendant|jet\s*file|full\s*detail|everything\s*on\s*case` +
-      String.raw`|(?<!\b(?:defense|defence|applicant|prior|uef|referred\s+out|opposing)\s)attorney` +
+      String.raw`|adj\s*(?:number|#|no)?|demographics?|applicant|defendant|jet\s*file|full\s*detail|everything\s*on\s*case` +
+      String.raw`|attorney` +
       String.raw`|paralegal|coordinator|links?)\b)` +
       String.raw`(?=.*(?:\bcase\b|\b[A-Z]{1,4}\d{3,}\b|\bvs\.?\b|\bv\.\s))`,
     'i',
